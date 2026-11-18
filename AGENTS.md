@@ -19,3 +19,9 @@
 
 - Giao diện giữ phong cách Giáo dục Phổ thông chuyên nghiệp: nền sáng dịu (`#F8FAFC`), chữ tương phản cao dễ đọc (`#1E293B`), điểm nhấn màu xanh học thuật (`#2563EB`) và xanh lá kỷ luật (`#10B981`).
 - Phân tách rõ ràng từng khu vực tính năng trong thư mục riêng biệt để tránh xung đột code (Merge Conflict) khi làm việc nhóm.
+
+## Quy tắc an toàn khi bật chế độ Turbo (Command Policy)
+- **ĐƯỢC PHÉP tự chạy:** `npm install <tên-gói>`, `npm test`, `npm run build`, `npm run lint`, `npx tsc --noEmit`, `git status`, `git add`, `git commit`.
+- **CẤM TUYỆT ĐỐI tự chạy:**
+  - Các lệnh treo tiến trình: `npm run dev`, `npm start`, `pnpm dev`.
+  - Các lệnh phá hủy dữ liệu hoặc lịch sử Git: `rm -rf`, `git push --force`, `git reset --hard`.
