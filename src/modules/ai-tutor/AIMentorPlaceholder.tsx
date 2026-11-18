@@ -19,6 +19,7 @@ import {
   createDefaultState,
   formatHoursAndMinutes,
   loadAppState,
+  STATE_CHANGE_EVENT,
 } from "@/lib/storage/local-db";
 import {
   analyzeStudentProgress,
@@ -47,7 +48,10 @@ export function AIMentorPlaceholder() {
   const formRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
-    setState(loadAppState());
+    const refresh = () => setState(loadAppState());
+    refresh();
+    window.addEventListener(STATE_CHANGE_EVENT, refresh);
+    return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
 
   const syncWithServer = (nextState: AppDatabaseState) => {
@@ -214,62 +218,81 @@ export function AIMentorPlaceholder() {
           </span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {analysis.diagnostics.map((diag) => (
-            <div
-              key={diag.goal.id}
-              data-testid={`ai-goal-diag-${diag.goal.id}`}
-              className="p-4 rounded-xl bg-edtech-bg border border-edtech-border flex flex-col justify-between space-y-3"
+        {analysis.diagnostics.length === 0 ? (
+          <div className="p-6 rounded-xl bg-edtech-bg border border-dashed border-slate-300 text-center space-y-2">
+            <p className="text-sm font-bold text-edtech-text">
+              Chưa có mục tiêu nào để AI phân tích định mức
+            </p>
+            <p className="text-xs text-edtech-muted">
+              Hãy tạo ít nhất 1 mục tiêu tại mục Lịch trình &amp; Mục tiêu để
+              AI tính số phiên Pomodoro cần học mỗi ngày.
+            </p>
+            <Link
+              href="/calendar"
+              className="inline-block px-3.5 py-2 rounded-xl bg-edtech-primary text-white text-xs font-bold"
             >
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`px-2 py-0.5 rounded-md text-xs font-bold border ${
-                      diag.isOverdue
-                        ? "bg-red-50 text-edtech-danger border-red-200"
-                        : diag.isUrgent
-                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : "bg-blue-50 text-edtech-primary border-blue-200"
-                    }`}
-                  >
-                    {diag.daysLabel}
-                  </span>
-                  <span className="text-xs font-bold text-edtech-success">
-                    {diag.goal.progressPercent}%
-                  </span>
+              + Thiết lập mục tiêu đầu tiên
+            </Link>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {analysis.diagnostics.map((diag) => (
+              <div
+                key={diag.goal.id}
+                data-testid={`ai-goal-diag-${diag.goal.id}`}
+                className="p-4 rounded-xl bg-edtech-bg border border-edtech-border flex flex-col justify-between space-y-3"
+              >
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-xs font-bold border ${
+                        diag.isOverdue
+                          ? "bg-red-50 text-edtech-danger border-red-200"
+                          : diag.isUrgent
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : "bg-blue-50 text-edtech-primary border-blue-200"
+                      }`}
+                    >
+                      {diag.daysLabel}
+                    </span>
+                    <span className="text-xs font-bold text-edtech-success">
+                      {diag.goal.progressPercent}%
+                    </span>
+                  </div>
+                  <h3 className="text-sm font-bold text-edtech-text">
+                    {diag.goal.title}
+                  </h3>
+                  <p className="text-xs text-edtech-muted">
+                    Đã tích lũy: {formatHoursAndMinutes(diag.goal.completedHours)}{" "}
+                    / {diag.goal.targetHours} giờ (Còn thiếu{" "}
+                    {formatHoursAndMinutes(diag.remainingHours)})
+                  </p>
                 </div>
-                <h3 className="text-sm font-bold text-edtech-text">
-                  {diag.goal.title}
-                </h3>
-                <p className="text-xs text-edtech-muted">
-                  Đã tích lũy: {formatHoursAndMinutes(diag.goal.completedHours)}{" "}
-                  / {diag.goal.targetHours} giờ (Còn thiếu{" "}
-                  {formatHoursAndMinutes(diag.remainingHours)})
-                </p>
-              </div>
 
-              <div className="p-3 rounded-lg bg-white border border-edtech-border space-y-1">
-                <p className="text-xs font-bold text-edtech-primary">
-                  Đề xuất định mức mỗi ngày:
-                </p>
-                {diag.remainingMinutes > 0 ? (
-                  <p className="text-xs text-edtech-text leading-relaxed">
-                    Cần học <strong>{diag.recommendedMinutesPerDay} phút/ngày</strong>{" "}
-                    (tương đương{" "}
-                    <strong>{diag.recommendedPomodoro25Count} phiên 25/5</strong>{" "}
-                    hoặc{" "}
-                    <strong>{diag.recommendedPomodoro50Count} phiên 50/15</strong>
-                    ).
+                <div className="p-3 rounded-lg bg-white border border-edtech-border space-y-1">
+                  <p className="text-xs font-bold text-edtech-primary">
+                    Đề xuất định mức mỗi ngày:
                   </p>
-                ) : (
-                  <p className="text-xs text-edtech-success font-semibold">
-                    Đã hoàn thành 100% mục tiêu!
-                  </p>
-                )}
+                  {diag.remainingMinutes > 0 ? (
+                    <p className="text-xs text-edtech-text leading-relaxed">
+                      Cần học{" "}
+                      <strong>{diag.recommendedMinutesPerDay} phút/ngày</strong>{" "}
+                      (tương đương{" "}
+                      <strong>{diag.recommendedPomodoro25Count} phiên 25/5</strong>{" "}
+                      hoặc{" "}
+                      <strong>{diag.recommendedPomodoro50Count} phiên 50/15</strong>
+                      ).
+                    </p>
+                  ) : (
+                    <p className="text-xs text-edtech-success font-semibold">
+                      Đã hoàn thành 100% mục tiêu!
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* PHẦN 2: ĐỀ XUẤT KHUNG GIỜ TRỐNG TỰ ĐỘNG & TRÒ CHUYỆN CỐ VẤN AI */}

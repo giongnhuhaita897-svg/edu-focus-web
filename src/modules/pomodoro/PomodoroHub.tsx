@@ -14,6 +14,7 @@ import {
   ArrowRightLeft,
   Target,
   Briefcase,
+  PlusCircle,
 } from "lucide-react";
 import {
   AppDatabaseState,
@@ -26,6 +27,7 @@ import {
   formatHoursAndMinutes,
   loadAppState,
   recordPomodoroWorkSessionInState,
+  STATE_CHANGE_EVENT,
 } from "@/lib/storage/local-db";
 
 export const POMODORO_PRESETS: Record<PomodoroPresetId, PomodoroPreset> = {
@@ -61,17 +63,22 @@ export function PomodoroHub() {
   const [presetId, setPresetId] = useState<PomodoroPresetId>("25_5");
   const [phase, setPhase] = useState<PomodoroPhase>("work");
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [completedCycles, setCompletedCycles] = useState<number>(2);
   const [selectedGoalId, setSelectedGoalId] = useState<string>("goal-dsa");
   const [selectedEventId, setSelectedEventId] = useState<string>("");
   const [sessionBanner, setSessionBanner] = useState<string>("");
 
   useEffect(() => {
-    const loaded = loadAppState();
-    setDbState(loaded);
-    if (loaded.goals.length > 0) {
-      setSelectedGoalId(loaded.goals[0].id);
-    }
+    const refresh = () => {
+      const loaded = loadAppState();
+      setDbState(loaded);
+      setSelectedGoalId((prev) => {
+        if (loaded.goals.some((g) => g.id === prev)) return prev;
+        return loaded.goals[0]?.id ?? "";
+      });
+    };
+    refresh();
+    window.addEventListener(STATE_CHANGE_EVENT, refresh);
+    return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
 
   const currentPreset = POMODORO_PRESETS[presetId];
@@ -113,7 +120,6 @@ export function PomodoroHub() {
       scheduleEventId: selectedEventId || undefined,
     });
     syncWithServer(next);
-    setCompletedCycles((c) => c + 1);
     setIsRunning(false);
 
     const targetGoal = next.goals.find((g) => g.id === selectedGoalId);
@@ -141,7 +147,6 @@ export function PomodoroHub() {
     return () => window.clearInterval(interval);
   }, [isRunning]);
 
-  // Khi đồng hồ đếm ngược pha Học/Làm chạm mốc 0, tự động ghi nhận phiên học
   useEffect(() => {
     if (secondsLeft === 0 && phase === "work") {
       handleCompleteWorkSession();
@@ -175,13 +180,16 @@ export function PomodoroHub() {
   const selectedEvent = dbState.scheduleEvents.find(
     (e) => e.id === selectedEventId
   );
+  const studySessionsCount = dbState.focusSessions.filter(
+    (s) => s.mode === "study_focus"
+  ).length;
 
   return (
     <div className="space-y-8">
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
-            Quản lý nhịp độ Học / Làm &amp; Nghỉ
+            Phiên bản v1.1+ • Quản lý nhịp độ Học / Làm &amp; Nghỉ
           </span>
           <h1 className="mt-2 text-2xl md:text-3xl font-bold text-edtech-text">
             Đồng hồ Kỷ luật Pomodoro (25/5 &amp; 50/15)
@@ -337,17 +345,21 @@ export function PomodoroHub() {
               onChange={(e) => setSelectedGoalId(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
             >
-              {dbState.goals.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.title} ({formatHoursAndMinutes(g.completedHours)} /{" "}
-                  {g.targetHours} giờ)
-                </option>
-              ))}
+              {dbState.goals.length === 0 ? (
+                <option value="">-- Chưa có mục tiêu nào --</option>
+              ) : (
+                dbState.goals.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.title} ({formatHoursAndMinutes(g.completedHours)} /{" "}
+                    {g.targetHours} giờ)
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>
 
-        {selectedGoal && (
+        {selectedGoal ? (
           <div className="p-4 rounded-xl bg-edtech-bg border border-edtech-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="space-y-0.5">
               <div className="flex items-center gap-2 text-xs font-bold text-edtech-primary">
@@ -374,6 +386,20 @@ export function PomodoroHub() {
                 phút
               </p>
             </div>
+          </div>
+        ) : (
+          <div className="p-4 rounded-xl bg-edtech-bg border border-dashed border-slate-300 flex items-center justify-between gap-3">
+            <p className="text-xs text-edtech-muted">
+              Bạn chưa có mục tiêu nào để cộng giờ. Bạn vẫn có thể chạy đồng hồ
+              hoặc tạo mục tiêu mới.
+            </p>
+            <Link
+              href="/calendar"
+              className="shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-edtech-primary text-white text-xs font-bold"
+            >
+              <PlusCircle className="w-3.5 h-3.5" aria-hidden={true} />
+              <span>Tạo mục tiêu</span>
+            </Link>
           </div>
         )}
       </section>
@@ -571,10 +597,10 @@ export function PomodoroHub() {
                 className="w-4 h-4 text-edtech-success"
                 aria-hidden={true}
               />
-              <span>Chu kỳ hoàn thành hôm nay:</span>
+              <span>Phiên tập trung đã ghi nhận:</span>
             </div>
             <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-edtech-success text-xs font-bold border border-emerald-200">
-              {completedCycles} chu kỳ
+              {studySessionsCount} phiên
             </span>
           </div>
         </section>

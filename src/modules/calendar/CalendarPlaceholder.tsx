@@ -15,11 +15,16 @@ import {
   RotateCcw,
   Filter,
   Timer,
+  LayoutGrid,
+  List,
+  Repeat,
+  Eraser,
 } from "lucide-react";
 import {
   addGoalToState,
   addScheduleEventToState,
   calculateEventDurationHours,
+  clearToEmptyState,
   createDefaultState,
   deleteGoalFromState,
   deleteScheduleEventFromState,
@@ -27,13 +32,16 @@ import {
   getDaysRemainingInfo,
   loadAppState,
   resetAppState,
+  STATE_CHANGE_EVENT,
   updateGoalInState,
+  updateScheduleEventInState,
   updateScheduleEventStatusInState,
 } from "@/lib/storage/local-db";
 import {
   AppDatabaseState,
   Goal,
   GoalCategory,
+  ScheduleEvent,
   ScheduleEventStatus,
   ScheduleEventType,
 } from "@/types/database";
@@ -49,6 +57,15 @@ const EVENT_TYPE_LABELS: Record<ScheduleEventType, string> = {
   exercise: "Vận động",
   review: "Ôn tập",
 };
+
+function getTimeSlotBucket(
+  startTime: string
+): "morning" | "afternoon" | "evening" {
+  const hour = Number(startTime.split(":")[0]) || 0;
+  if (hour < 12) return "morning";
+  if (hour < 18) return "afternoon";
+  return "evening";
+}
 
 export function CalendarPlaceholder() {
   const today = new Date().toISOString().slice(0, 10);
@@ -67,7 +84,8 @@ export function CalendarPlaceholder() {
   const [goalDescription, setGoalDescription] = useState<string>("");
   const [goalError, setGoalError] = useState<string>("");
 
-  // State cho Form Sự kiện Lịch trình
+  // State cho Form Sự kiện Lịch trình (hỗ trợ cả thêm mới, lặp lịch & chỉnh sửa v1.1+)
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [eventTitle, setEventTitle] = useState<string>("");
   const [eventDate, setEventDate] = useState<string>(today);
   const [eventStartTime, setEventStartTime] = useState<string>("15:30");
@@ -75,9 +93,11 @@ export function CalendarPlaceholder() {
   const [eventType, setEventType] = useState<ScheduleEventType>("study");
   const [eventGoalId, setEventGoalId] = useState<string>("");
   const [eventNotes, setEventNotes] = useState<string>("");
+  const [eventRepeatDays, setEventRepeatDays] = useState<string>("1");
   const [eventError, setEventError] = useState<string>("");
 
-  // State bộ lọc lịch trình
+  // State bộ lọc & chế độ xem lịch trình (Danh sách vs Bảng khung giờ v1.1+)
+  const [viewMode, setViewMode] = useState<"list" | "board">("list");
   const [filterDateMode, setFilterDateMode] = useState<"all" | "date">("all");
   const [selectedFilterDate, setSelectedFilterDate] = useState<string>(today);
   const [filterEventType, setFilterEventType] = useState<
@@ -85,7 +105,10 @@ export function CalendarPlaceholder() {
   >("all");
 
   useEffect(() => {
-    setState(loadAppState());
+    const refresh = () => setState(loadAppState());
+    refresh();
+    window.addEventListener(STATE_CHANGE_EVENT, refresh);
+    return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
 
   const syncWithServer = (nextState: AppDatabaseState) => {
@@ -109,6 +132,19 @@ export function CalendarPlaceholder() {
     setGoalDeadline("2026-12-31");
     setGoalDescription("");
     setGoalError("");
+  };
+
+  const resetEventForm = () => {
+    setEditingEventId(null);
+    setEventTitle("");
+    setEventDate(today);
+    setEventStartTime("15:30");
+    setEventEndTime("17:00");
+    setEventType("study");
+    setEventGoalId("");
+    setEventNotes("");
+    setEventRepeatDays("1");
+    setEventError("");
   };
 
   const handleGoalSubmit = (e: React.FormEvent<HTMLFormElement>) => {
@@ -183,6 +219,23 @@ export function CalendarPlaceholder() {
       return;
     }
 
+    if (editingEventId) {
+      const next = updateScheduleEventInState(state, editingEventId, {
+        title: trimmedTitle,
+        date: eventDate,
+        startTime: eventStartTime,
+        endTime: eventEndTime,
+        type: eventType,
+        goalId: eventGoalId || undefined,
+        notes: eventNotes.trim() || undefined,
+      });
+      syncWithServer(next);
+      setStatusBanner(`Đã cập nhật buổi lịch "${trimmedTitle}".`);
+      resetEventForm();
+      return;
+    }
+
+    const repeatCount = Number(eventRepeatDays) || 1;
     const next = addScheduleEventToState(state, {
       title: trimmedTitle,
       date: eventDate,
@@ -191,12 +244,28 @@ export function CalendarPlaceholder() {
       type: eventType,
       goalId: eventGoalId || undefined,
       notes: eventNotes,
+      repeatDays: repeatCount,
     });
     syncWithServer(next);
-    setEventTitle("");
-    setEventNotes("");
+    setStatusBanner(
+      repeatCount > 1
+        ? `Đã thêm chuỗi ${repeatCount} buổi lịch "${trimmedTitle}" liên tiếp từ ngày ${eventDate}.`
+        : `Đã thêm buổi lịch "${trimmedTitle}" vào ngày ${eventDate}.`
+    );
+    resetEventForm();
+  };
+
+  const handleStartEditEvent = (evt: ScheduleEvent) => {
+    setEditingEventId(evt.id);
+    setEventTitle(evt.title);
+    setEventDate(evt.date);
+    setEventStartTime(evt.startTime);
+    setEventEndTime(evt.endTime);
+    setEventType(evt.type);
+    setEventGoalId(evt.goalId ?? "");
+    setEventNotes(evt.notes ?? "");
+    setEventRepeatDays("1");
     setEventError("");
-    setStatusBanner(`Đã thêm buổi lịch "${trimmedTitle}" vào ngày ${eventDate}.`);
   };
 
   const handleChangeEventStatus = (
@@ -217,6 +286,9 @@ export function CalendarPlaceholder() {
   const handleDeleteEvent = (eventId: string, title: string) => {
     const next = deleteScheduleEventFromState(state, eventId);
     syncWithServer(next);
+    if (editingEventId === eventId) {
+      resetEventForm();
+    }
     setStatusBanner(`Đã xóa buổi lịch "${title}".`);
   };
 
@@ -224,7 +296,18 @@ export function CalendarPlaceholder() {
     const initial = resetAppState();
     syncWithServer(initial);
     resetGoalForm();
+    resetEventForm();
     setStatusBanner("Đã khôi phục dữ liệu mẫu ban đầu.");
+  };
+
+  const handleClearEmpty = () => {
+    const empty = clearToEmptyState();
+    syncWithServer(empty);
+    resetGoalForm();
+    resetEventForm();
+    setStatusBanner(
+      "Đã làm mới toàn bộ mục tiêu và lịch trình về trạng thái trống như khi mới dùng."
+    );
   };
 
   const filteredEvents = state.scheduleEvents.filter((evt) => {
@@ -255,26 +338,36 @@ export function CalendarPlaceholder() {
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
-            Giai đoạn 2 • Quản lý Mục tiêu &amp; Thời gian biểu
+            Phiên bản v1.1+ • Quản lý Mục tiêu &amp; Lịch trình Đa chế độ
           </span>
           <h1 className="mt-2 text-2xl md:text-3xl font-bold text-edtech-text">
             Hệ thống Lịch trình &amp; Mục tiêu Cá nhân
           </h1>
           <p className="mt-1 text-sm text-edtech-muted">
-            Thiết lập mục tiêu kèm đếm ngược số ngày còn lại. Thời gian học
-            được cộng dồn chuẩn xác (25 phút / 50 phút) khi hoàn thành phiên
-            tập trung Pomodoro.
+            Thiết lập mục tiêu kèm đếm ngược số ngày còn lại, lên lịch lặp lại
+            theo chuỗi ngày và xem theo Danh sách hoặc Bảng khung giờ Sáng –
+            Chiều – Tối.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleResetDemo}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-edtech-surface hover:bg-slate-100 text-edtech-muted hover:text-edtech-text text-xs font-semibold border border-edtech-border transition-colors shrink-0 self-start sm:self-auto"
-        >
-          <RotateCcw className="w-4 h-4" aria-hidden={true} />
-          <span>Khôi phục dữ liệu mẫu</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={handleClearEmpty}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-edtech-surface hover:bg-slate-100 text-edtech-text text-xs font-semibold border border-edtech-border transition-colors"
+          >
+            <Eraser className="w-4 h-4 text-edtech-muted" aria-hidden={true} />
+            <span>Xóa trắng (Như mới dùng)</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleResetDemo}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-edtech-primary text-xs font-semibold border border-blue-200 transition-colors"
+          >
+            <RotateCcw className="w-4 h-4" aria-hidden={true} />
+            <span>Khôi phục dữ liệu mẫu</span>
+          </button>
+        </div>
       </header>
 
       {/* Thông báo trạng thái ARIA live */}
@@ -303,7 +396,7 @@ export function CalendarPlaceholder() {
         aria-label="Thống kê mục tiêu và lịch trình"
         className="grid grid-cols-1 sm:grid-cols-3 gap-4"
       >
-        <div className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
+        <article className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-edtech-muted">
               Tổng số mục tiêu
@@ -317,9 +410,9 @@ export function CalendarPlaceholder() {
             Tích lũy {formatHoursAndMinutes(totalCompletedHours)} /{" "}
             {totalTargetHours} giờ mục tiêu
           </p>
-        </div>
+        </article>
 
-        <div className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
+        <article className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-edtech-muted">
               Buổi lịch hoàn thành
@@ -335,9 +428,9 @@ export function CalendarPlaceholder() {
           <p className="mt-1 text-xs text-edtech-success font-medium">
             Kết nối trực tiếp với phiên tập trung Pomodoro
           </p>
-        </div>
+        </article>
 
-        <div className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
+        <article className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-edtech-muted">
               Tích lũy giờ học chuẩn
@@ -356,7 +449,7 @@ export function CalendarPlaceholder() {
           >
             Mở Đồng hồ Pomodoro để học →
           </Link>
-        </div>
+        </article>
       </section>
 
       {/* PHẦN 1: QUẢN LÝ MỤC TIÊU CÁ NHÂN */}
@@ -552,9 +645,20 @@ export function CalendarPlaceholder() {
           </div>
 
           {state.goals.length === 0 ? (
-            <p className="p-6 text-center text-sm text-edtech-muted bg-edtech-bg rounded-xl border border-edtech-border">
-              Chưa có mục tiêu nào. Hãy tạo mục tiêu đầu tiên ở khung bên trái!
-            </p>
+            <div className="p-8 text-center bg-edtech-bg rounded-2xl border border-dashed border-slate-300 space-y-2">
+              <Target
+                className="w-8 h-8 text-edtech-primary mx-auto"
+                aria-hidden={true}
+              />
+              <p className="text-sm font-bold text-edtech-text">
+                Danh sách Mục tiêu đang trống
+              </p>
+              <p className="text-xs text-edtech-muted max-w-md mx-auto">
+                Hãy điền thông tin ở khung &ldquo;Thêm Mục tiêu Mới&rdquo; bên
+                trái để bắt đầu theo dõi số giờ học và đếm ngược ngày hoàn
+                thành.
+              </p>
+            </div>
           ) : (
             <ul className="space-y-3.5">
               {state.goals.map((goal) => {
@@ -660,24 +764,37 @@ export function CalendarPlaceholder() {
         </section>
       </div>
 
-      {/* PHẦN 2: THỜI GIAN BIỂU & SỰ KIỆN LỊCH TRÌNH */}
+      {/* PHẦN 2: THỜI GIAN BIỂU & SỰ KIỆN LỊCH TRÌNH (HỖ TRỢ LƯỚI KHUNG GIỜ & LẶP LỊCH v1.1+) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Form Thêm Sự kiện Lịch trình */}
+        {/* Form Thêm / Sửa Sự kiện Lịch trình */}
         <section
           aria-labelledby="event-form-heading"
           className="lg:col-span-5 p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
         >
-          <div className="flex items-center gap-2">
-            <CalendarCheck2
-              className="w-5 h-5 text-edtech-primary"
-              aria-hidden={true}
-            />
-            <h2
-              id="event-form-heading"
-              className="text-lg font-bold text-edtech-text"
-            >
-              Lên Lịch Học tập &amp; Vận động
-            </h2>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CalendarCheck2
+                className="w-5 h-5 text-edtech-primary"
+                aria-hidden={true}
+              />
+              <h2
+                id="event-form-heading"
+                className="text-lg font-bold text-edtech-text"
+              >
+                {editingEventId
+                  ? "Chỉnh sửa Buổi Lịch"
+                  : "Lên Lịch Học tập & Vận động"}
+              </h2>
+            </div>
+            {editingEventId && (
+              <button
+                type="button"
+                onClick={resetEventForm}
+                className="text-xs font-semibold text-edtech-muted hover:text-edtech-text underline"
+              >
+                Hủy sửa
+              </button>
+            )}
           </div>
 
           <form
@@ -803,27 +920,54 @@ export function CalendarPlaceholder() {
               </div>
             </fieldset>
 
-            <div>
-              <label
-                htmlFor="event-goal"
-                className="block text-xs font-bold text-edtech-text mb-1"
-              >
-                Liên kết với Mục tiêu (để chọn nhanh trong phòng Pomodoro)
-              </label>
-              <select
-                id="event-goal"
-                name="goalId"
-                value={eventGoalId}
-                onChange={(e) => setEventGoalId(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
-              >
-                <option value="">-- Không gắn mục tiêu cụ thể --</option>
-                {state.goals.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.title}
-                  </option>
-                ))}
-              </select>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="event-goal"
+                  className="block text-xs font-bold text-edtech-text mb-1"
+                >
+                  Liên kết với Mục tiêu
+                </label>
+                <select
+                  id="event-goal"
+                  name="goalId"
+                  value={eventGoalId}
+                  onChange={(e) => setEventGoalId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
+                >
+                  <option value="">-- Không gắn mục tiêu --</option>
+                  {state.goals.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {!editingEventId && (
+                <div>
+                  <label
+                    htmlFor="event-repeat"
+                    className="block text-xs font-bold text-edtech-text mb-1"
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <Repeat className="w-3.5 h-3.5" aria-hidden={true} />
+                      <span>Lặp lịch tự động (v1.1+)</span>
+                    </span>
+                  </label>
+                  <select
+                    id="event-repeat"
+                    name="repeatDays"
+                    value={eventRepeatDays}
+                    onChange={(e) => setEventRepeatDays(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
+                  >
+                    <option value="1">Không lặp (Chỉ 1 ngày)</option>
+                    <option value="3">Lặp 3 ngày liên tiếp</option>
+                    <option value="5">Lặp 5 ngày học trong tuần</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             <div>
@@ -859,12 +1003,14 @@ export function CalendarPlaceholder() {
               className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-edtech-primary hover:bg-edtech-primaryHover text-white text-sm font-bold shadow-sm transition-colors"
             >
               <Plus className="w-4 h-4" aria-hidden={true} />
-              <span>Thêm vào lịch trình</span>
+              <span>
+                {editingEventId ? "Lưu thay đổi buổi lịch" : "Thêm vào lịch trình"}
+              </span>
             </button>
           </form>
         </section>
 
-        {/* Danh sách Lịch trình Tương tác */}
+        {/* Danh sách / Bảng Lưới Lịch trình Tương tác */}
         <section
           aria-labelledby="schedule-list-heading"
           className="lg:col-span-7 p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
@@ -883,12 +1029,45 @@ export function CalendarPlaceholder() {
               </h2>
             </div>
 
-            {/* Bộ lọc ngày & loại hoạt động */}
+            {/* Bộ lọc ngày, loại hoạt động & chuyển đổi Danh sách / Lưới khung giờ */}
             <div
               role="search"
               aria-label="Bộ lọc lịch trình"
               className="flex flex-wrap items-center gap-2"
             >
+              <div
+                role="group"
+                aria-label="Chế độ hiển thị lịch"
+                className="inline-flex rounded-xl bg-edtech-bg p-1 border border-edtech-border"
+              >
+                <button
+                  type="button"
+                  onClick={() => setViewMode("list")}
+                  aria-pressed={viewMode === "list"}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    viewMode === "list"
+                      ? "bg-edtech-primary text-white"
+                      : "text-edtech-muted hover:text-edtech-text"
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" aria-hidden={true} />
+                  <span>Danh sách</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("board")}
+                  aria-pressed={viewMode === "board"}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    viewMode === "board"
+                      ? "bg-edtech-primary text-white"
+                      : "text-edtech-muted hover:text-edtech-text"
+                  }`}
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" aria-hidden={true} />
+                  <span>Bảng Ca Học</span>
+                </button>
+              </div>
+
               <div className="inline-flex rounded-xl bg-edtech-bg p-1 border border-edtech-border">
                 <button
                   type="button"
@@ -951,9 +1130,98 @@ export function CalendarPlaceholder() {
           </div>
 
           {filteredEvents.length === 0 ? (
-            <p className="p-6 text-center text-sm text-edtech-muted bg-edtech-bg rounded-xl border border-edtech-border">
-              Không có buổi lịch nào khớp với bộ lọc hiện tại.
-            </p>
+            <div className="p-8 text-center bg-edtech-bg rounded-2xl border border-dashed border-slate-300 space-y-2">
+              <CalendarCheck2
+                className="w-8 h-8 text-edtech-primary mx-auto"
+                aria-hidden={true}
+              />
+              <p className="text-sm font-bold text-edtech-text">
+                Chưa có buổi lịch nào
+              </p>
+              <p className="text-xs text-edtech-muted max-w-md mx-auto">
+                Thêm buổi học ở khung bên trái hoặc sang mục Cố vấn AI để nhận
+                đề xuất lịch tự động không trùng giờ.
+              </p>
+            </div>
+          ) : viewMode === "board" ? (
+            /* Chế độ Bảng Ca Học Sáng / Chiều / Tối (v1.1+ Board View) */
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+              {(
+                [
+                  { id: "morning", title: "Ca Sáng (05:00 - 11:59)" },
+                  { id: "afternoon", title: "Ca Chiều (12:00 - 17:59)" },
+                  { id: "evening", title: "Ca Tối (18:00 - 23:59)" },
+                ] as const
+              ).map((slot) => {
+                const slotEvents = filteredEvents.filter(
+                  (e) => getTimeSlotBucket(e.startTime) === slot.id
+                );
+                return (
+                  <div
+                    key={slot.id}
+                    className="p-3.5 rounded-xl bg-edtech-bg border border-edtech-border space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between border-b border-edtech-border pb-2">
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-edtech-primary">
+                        {slot.title}
+                      </h3>
+                      <span className="text-xs font-bold text-edtech-muted">
+                        {slotEvents.length}
+                      </span>
+                    </div>
+                    {slotEvents.length === 0 ? (
+                      <p className="text-xs text-edtech-muted py-4 text-center">
+                        Trống lịch
+                      </p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {slotEvents.map((evt) => (
+                          <li
+                            key={evt.id}
+                            className="p-3 rounded-xl bg-white border border-edtech-border space-y-1.5 shadow-sm"
+                          >
+                            <div className="flex items-center justify-between text-[11px] font-bold text-edtech-primary">
+                              <span>
+                                {evt.startTime} - {evt.endTime}
+                              </span>
+                              <span>{evt.date.slice(5)}</span>
+                            </div>
+                            <p className="text-xs font-bold text-edtech-text">
+                              {evt.title}
+                            </p>
+                            <div className="flex items-center justify-between pt-1">
+                              <span className="text-[11px] text-edtech-muted">
+                                {EVENT_TYPE_LABELS[evt.type]}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleChangeEventStatus(
+                                    evt.id,
+                                    evt.status === "completed"
+                                      ? "planned"
+                                      : "completed"
+                                  )
+                                }
+                                className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                  evt.status === "completed"
+                                    ? "bg-emerald-50 text-edtech-success"
+                                    : "bg-blue-50 text-edtech-primary"
+                                }`}
+                              >
+                                {evt.status === "completed"
+                                  ? "Đã xong ✓"
+                                  : "Hoàn thành"}
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           ) : (
             <ul className="space-y-3">
               {filteredEvents.map((evt) => {
@@ -1065,6 +1333,15 @@ export function CalendarPlaceholder() {
                             Bỏ lỡ
                           </button>
                         )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditEvent(evt)}
+                          aria-label={`Sửa buổi lịch ${evt.title}`}
+                          className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-edtech-text border border-edtech-border transition-colors"
+                        >
+                          <Edit3 className="w-4 h-4" aria-hidden={true} />
+                        </button>
 
                         <button
                           type="button"

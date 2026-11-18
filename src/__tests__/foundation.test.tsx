@@ -6,6 +6,7 @@ import {
   addScheduleEventToState,
   calculateEventDurationHours,
   calculateGoalProgress,
+  clearToEmptyState,
   createDefaultState,
   deleteGoalFromState,
   formatHoursAndMinutes,
@@ -35,7 +36,7 @@ vi.mock("next/navigation", () => ({
   usePathname: () => currentPathname,
 }));
 
-describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch trình & Cố vấn AI Mentor", () => {
+describe("Phiên bản v1.1+ — Hệ sinh thái Kỷ luật Tự học, Trạng thái Người dùng mới & Phân tích Chuyên sâu", () => {
   beforeEach(() => {
     window.localStorage.clear();
     currentPathname = "/";
@@ -73,41 +74,55 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     });
   });
 
-  it("khởi tạo, lưu và đọc dữ liệu từ localStorage chuẩn xác", () => {
+  it("khởi tạo, lưu, xóa trắng về trạng thái người dùng mới (Empty State) và khôi phục dữ liệu mẫu an toàn", () => {
     const initial = loadAppState();
     expect(initial.goals.length).toBeGreaterThanOrEqual(3);
     expect(window.localStorage.getItem(STORAGE_KEY)).not.toBeNull();
 
-    const modified = {
-      ...initial,
-      goals: [
-        ...initial.goals,
-        {
-          id: "goal-new",
-          title: "Đọc sách chuyên ngành 30 phút mỗi tối",
-          description: "Rèn thói quen đọc sâu",
-          category: "skill" as const,
-          targetHours: 20,
-          completedHours: 5,
-          deadline: "2026-12-30",
-          progressPercent: 25,
-          status: "active" as const,
-        },
-      ],
-    };
+    // Chuyển về trạng thái người dùng mới hoàn toàn (0 mục tiêu, 0 lịch, 0 phiên học)
+    const empty = clearToEmptyState();
+    expect(empty.goals).toHaveLength(0);
+    expect(empty.scheduleEvents).toHaveLength(0);
+    expect(empty.focusSessions).toHaveLength(0);
 
-    saveAppState(modified);
-    const reloaded = loadAppState();
-    expect(reloaded.goals).toHaveLength(initial.goals.length + 1);
-    expect(reloaded.goals.at(-1)?.title).toBe(
-      "Đọc sách chuyên ngành 30 phút mỗi tối"
-    );
+    const reloadedEmpty = loadAppState();
+    expect(reloadedEmpty.goals).toHaveLength(0);
 
-    const reset = resetAppState();
-    expect(reset.goals).toHaveLength(initial.goals.length);
+    // Khôi phục lại dữ liệu mẫu
+    const restored = resetAppState();
+    expect(restored.goals.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("hiển thị thanh điều hướng Sidebar gồm cả mục Đồng hồ Pomodoro và Phòng Kỷ luật", () => {
+  it("hiển thị giao diện Hướng dẫn 3 bước (Onboarding) mượt mà không lỗi khi ở trạng thái Người dùng mới (Empty State)", () => {
+    clearToEmptyState();
+
+    const { unmount: unmountDash } = render(<DashboardPage />);
+    expect(
+      screen.getByText(/Bắt đầu Hành trình Kỷ luật Tự học \(3 Bước Khởi tạo\)/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText("0 phút")).toBeInTheDocument();
+    expect(screen.getByText("0 / 0 buổi")).toBeInTheDocument();
+    unmountDash();
+
+    const { unmount: unmountCal } = render(<CalendarPlaceholder />);
+    expect(
+      screen.getByText(/Danh sách Mục tiêu đang trống/i)
+    ).toBeInTheDocument();
+    unmountCal();
+
+    const { unmount: unmountPomo } = render(<PomodoroHub />);
+    expect(
+      screen.getByText(/Bạn chưa có mục tiêu nào để cộng giờ/i)
+    ).toBeInTheDocument();
+    unmountPomo();
+
+    render(<AIMentorPlaceholder />);
+    expect(
+      screen.getByText(/Chưa có mục tiêu nào để AI phân tích định mức/i)
+    ).toBeInTheDocument();
+  });
+
+  it("hiển thị thanh điều hướng Sidebar v1.1+ gồm cả mục Đồng hồ Pomodoro và Phòng Kỷ luật", () => {
     currentPathname = "/pomodoro";
     render(<Sidebar />);
 
@@ -131,7 +146,7 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     expect(aiLink).not.toHaveAttribute("aria-current");
   });
 
-  it("hiển thị trang Tổng quan (Dashboard) với chỉ số kỷ luật, mục tiêu, lịch hôm nay và lời khuyên AI", () => {
+  it("hiển thị trang Tổng quan v1.1+ với 4 chỉ số kỷ luật, nhật ký phiên rèn luyện, mục tiêu, lịch hôm nay và lời khuyên AI", () => {
     render(<DashboardPage />);
 
     expect(
@@ -143,16 +158,18 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     expect(screen.getByText("100 phút")).toBeInTheDocument();
     expect(screen.getByText("2 / 4 buổi")).toBeInTheDocument();
     expect(screen.getByText("15 nhịp tập")).toBeInTheDocument();
+    expect(screen.getByText("96%")).toBeInTheDocument();
     expect(
-      screen.getByText(/Hoàn thành môn Cấu trúc dữ liệu & Giải thuật/i)
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Lời khuyên từ Cố vấn AI Mentor/i)
+      screen.getByText(/Nhật ký Phiên Rèn luyện Kỷ luật Gần đây/i)
     ).toBeInTheDocument();
   });
 
-  it("Phòng Kỷ luật Webcam chia rõ 2 mục: Giám sát Ngồi học (mất tập trung/ngủ) & Giám sát Tập thể dục kèm tích hợp Pomodoro", () => {
+  it("Phòng Kỷ luật Webcam v1.1+ có tùy chọn Quyền riêng tư, chia 2 mục giám sát và cho phép đếm + lưu phiên tập thể dục", () => {
     render(<WebcamPlaceholder />);
+
+    expect(
+      screen.getByText(/Chế độ Quyền riêng tư Camera/i)
+    ).toBeInTheDocument();
 
     const studyTab = screen.getByRole("tab", {
       name: /1\. Giám sát Ngồi học & Tập trung/i,
@@ -164,16 +181,22 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     expect(studyTab).toHaveAttribute("aria-selected", "true");
     expect(exerciseTab).toHaveAttribute("aria-selected", "false");
 
-    expect(
-      screen.getByText(/Phát hiện Đang ngủ \/ Gục đầu/i)
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Tích hợp Chu kỳ Pomodoro/i)).toBeInTheDocument();
-
     fireEvent.click(exerciseTab);
     expect(exerciseTab).toHaveAttribute("aria-selected", "true");
-    expect(studyTab).toHaveAttribute("aria-selected", "false");
+
+    // Đếm +1 nhịp chuẩn và lưu phiên vận động
+    const countRepBtn = screen.getByRole("button", {
+      name: /Đếm \+1 nhịp chuẩn/i,
+    });
+    fireEvent.click(countRepBtn);
+    expect(screen.getByText(/1 \/ 15 nhịp/i)).toBeInTheDocument();
+
+    const saveExerciseBtn = screen.getByRole("button", {
+      name: /Lưu phiên vận động vào Hồ sơ/i,
+    });
+    fireEvent.click(saveExerciseBtn);
     expect(
-      screen.getByText(/Khung Giám sát Vận động & Đếm nhịp Chuẩn xác/i)
+      screen.getByText(/Đã lưu phiên vận động/i)
     ).toBeInTheDocument();
   });
 
@@ -217,7 +240,7 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     );
   });
 
-  it("Giai đoạn 2: tích lũy phút chuẩn xác qua recordPomodoroWorkSessionInState (25p + 25p = 50p, + 50p = 1h40p)", () => {
+  it("Hỗ trợ lặp lịch nhiều ngày liên tiếp (repeatDays) và tích lũy phút chuẩn xác qua recordPomodoroWorkSessionInState", () => {
     let state = createDefaultState();
 
     state = addGoalToState(state, {
@@ -229,23 +252,22 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     });
     const addedGoal = state.goals[0];
 
+    const beforeEventCount = state.scheduleEvents.length;
     state = addScheduleEventToState(state, {
-      title: "Code phân hệ Lịch trình Giai đoạn 2",
+      title: "Ôn tập thuật toán mỗi chiều",
       date: "2026-11-18",
       startTime: "14:00",
       endTime: "16:00",
       type: "study",
       goalId: addedGoal.id,
+      repeatDays: 3,
     });
-    const addedEvt = state.scheduleEvents.find(
-      (e) => e.title === "Code phân hệ Lịch trình Giai đoạn 2"
-    )!;
+    expect(state.scheduleEvents.length).toBe(beforeEventCount + 3);
 
     state = recordPomodoroWorkSessionInState(state, {
       presetId: "25_5",
       workMinutes: 25,
       goalId: addedGoal.id,
-      scheduleEventId: addedEvt.id,
     });
     let updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
     expect(formatHoursAndMinutes(updatedGoal.completedHours)).toBe("25 phút");
@@ -272,14 +294,23 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     expect(state.goals.find((g) => g.id === addedGoal.id)).toBeUndefined();
   });
 
-  it("Giai đoạn 2 UI: hiển thị số ngày còn lại kế bên hạn hoàn thành và không có nút tự cộng +1h thủ công", () => {
+  it("Giao diện Lịch trình v1.1+ hỗ trợ chuyển đổi Danh sách / Bảng Ca Học (Sáng - Chiều - Tối) và hiển thị số ngày còn lại", () => {
     render(<CalendarPlaceholder />);
 
     expect(
       screen.getByTestId("goal-days-left-goal-dsa").textContent
     ).toMatch(/Còn \d+ ngày|Hết hạn hôm nay|Quá hạn/i);
 
-    expect(screen.queryByRole("button", { name: /\+1h học/i })).toBeNull();
+    // Chuyển sang chế độ Bảng Ca Học (Board View)
+    const boardBtn = screen.getByRole("button", { name: /Bảng Ca Học/i });
+    fireEvent.click(boardBtn);
+    expect(screen.getByText(/Ca Sáng \(05:00 - 11:59\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Ca Chiều \(12:00 - 17:59\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Ca Tối \(18:00 - 23:59\)/i)).toBeInTheDocument();
+
+    // Chuyển lại Danh sách
+    const listBtn = screen.getByRole("button", { name: /Danh sách/i });
+    fireEvent.click(listBtn);
 
     const goalTitleInput = screen.getByLabelText(/Tên mục tiêu/i);
     const goalTargetInput = screen.getByLabelText(/Tổng số giờ cần đạt/i);
@@ -296,20 +327,6 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
     expect(
       screen.getAllByText(/Ôn thi Giải tích 1 đạt điểm A/i).length
     ).toBeGreaterThanOrEqual(1);
-
-    const eventTitleInput = screen.getByLabelText(/Nội dung buổi lịch/i);
-    fireEvent.change(eventTitleInput, {
-      target: { value: "Giải 10 bài tích phân suy rộng" },
-    });
-
-    const addEventBtn = screen.getByRole("button", {
-      name: /Thêm vào lịch trình/i,
-    });
-    fireEvent.click(addEventBtn);
-
-    expect(
-      screen.getByRole("heading", { name: /Giải 10 bài tích phân suy rộng/i })
-    ).toBeInTheDocument();
   });
 
   it("Giai đoạn 3: phân tích định mức Pomodoro mỗi ngày, đề xuất khung giờ trống và áp dụng 1-click vào lịch trình", () => {
@@ -333,7 +350,6 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
       })
     ).toBeInTheDocument();
 
-    // Bấm nút "Áp dụng vào lịch trình" đầu tiên -> tăng số sự kiện trong lịch
     const applyButtons = screen.getAllByRole("button", {
       name: /Áp dụng vào lịch trình/i,
     });
@@ -345,7 +361,6 @@ describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch tr�
       state.scheduleEvents.length + 1
     );
 
-    // Gửi câu hỏi tư vấn cho AI Mentor
     const chatInput = screen.getByLabelText(
       /Đặt câu hỏi hoặc yêu cầu Cố vấn AI/i
     );

@@ -1,6 +1,7 @@
 import {
   AIMessage,
   AppDatabaseState,
+  ExerciseType,
   FocusSession,
   Goal,
   GoalCategory,
@@ -12,6 +13,13 @@ import {
 } from "@/types/database";
 
 export const STORAGE_KEY = "edu_focus_db_v1";
+export const STATE_CHANGE_EVENT = "edufocus-state-change";
+
+function notifyStateChange() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(STATE_CHANGE_EVENT));
+  }
+}
 
 export function calculateGoalProgress(
   completedHours: number,
@@ -24,7 +32,6 @@ export function calculateGoalProgress(
 
 /**
  * Hiển thị thời lượng tích lũy chính xác theo giờ và phút (khớp với phiên Pomodoro 25p và 50p)
- * Ví dụ: 18 -> "18 giờ", 18 + 25/60 -> "18 giờ 25 phút", 50/60 -> "50 phút"
  */
 export function formatHoursAndMinutes(hours: number): string {
   const totalMinutes = Math.max(0, Math.round(hours * 60));
@@ -43,9 +50,6 @@ export interface DaysRemainingInfo {
   isUrgent: boolean;
 }
 
-/**
- * Tính số ngày còn lại tính từ ngày hiện tại (YYYY-MM-DD) tới hạn hoàn thành (deadline YYYY-MM-DD)
- */
 export function getDaysRemainingInfo(
   deadline: string,
   referenceDateStr?: string
@@ -115,6 +119,15 @@ export function calculateEventDurationHours(
   const diffMinutes = endH * 60 + endM - (startH * 60 + startM);
   if (diffMinutes <= 0) return 0;
   return Math.round((diffMinutes / 60) * 100) / 100;
+}
+
+export function addDaysToDateString(dateStr: string, daysToAdd: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) {
+    return dateStr;
+  }
+  const dt = new Date(Date.UTC(y, m - 1, d + daysToAdd));
+  return dt.toISOString().slice(0, 10);
 }
 
 export interface CreateGoalInput {
@@ -226,33 +239,66 @@ export interface CreateScheduleEventInput {
   type: ScheduleEventType;
   goalId?: string;
   notes?: string;
+  repeatDays?: number; // v1.1+: tạo lịch lặp lại nhiều ngày liên tiếp
 }
 
 export function addScheduleEventToState(
   state: AppDatabaseState,
   input: CreateScheduleEventInput
 ): AppDatabaseState {
-  const newEvent: ScheduleEvent = {
-    id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    title: input.title.trim(),
-    date: input.date,
-    startTime: input.startTime,
-    endTime: input.endTime,
-    type: input.type,
-    goalId: input.goalId || undefined,
-    status: "planned",
-    notes: input.notes?.trim() || undefined,
-  };
+  const count = Math.max(1, Math.min(7, Number(input.repeatDays) || 1));
+  const createdEvents: ScheduleEvent[] = [];
 
-  const sortedEvents = [...state.scheduleEvents, newEvent].sort((a, b) => {
-    const dateCompare = a.date.localeCompare(b.date);
-    if (dateCompare !== 0) return dateCompare;
-    return a.startTime.localeCompare(b.startTime);
-  });
+  for (let i = 0; i < count; i++) {
+    const dateStr = i === 0 ? input.date : addDaysToDateString(input.date, i);
+    createdEvents.push({
+      id: `evt-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+      title: input.title.trim(),
+      date: dateStr,
+      startTime: input.startTime,
+      endTime: input.endTime,
+      type: input.type,
+      goalId: input.goalId || undefined,
+      status: "planned",
+      notes: input.notes?.trim() || undefined,
+    });
+  }
+
+  const sortedEvents = [...state.scheduleEvents, ...createdEvents].sort(
+    (a, b) => {
+      const dateCompare = a.date.localeCompare(b.date);
+      if (dateCompare !== 0) return dateCompare;
+      return a.startTime.localeCompare(b.startTime);
+    }
+  );
 
   return saveAppState({
     ...state,
     scheduleEvents: sortedEvents,
+  });
+}
+
+export function updateScheduleEventInState(
+  state: AppDatabaseState,
+  eventId: string,
+  updates: Partial<
+    Pick<
+      ScheduleEvent,
+      "title" | "date" | "startTime" | "endTime" | "type" | "goalId" | "notes"
+    >
+  >
+): AppDatabaseState {
+  const nextEvents = state.scheduleEvents
+    .map((evt) => (evt.id === eventId ? { ...evt, ...updates } : evt))
+    .sort((a, b) => {
+      const dateCompare = a.date.localeCompare(b.date);
+      if (dateCompare !== 0) return dateCompare;
+      return a.startTime.localeCompare(b.startTime);
+    });
+
+  return saveAppState({
+    ...state,
+    scheduleEvents: nextEvents,
   });
 }
 
@@ -278,17 +324,11 @@ export function updateScheduleEventStatusInState(
 
 export interface RecordPomodoroWorkInput {
   presetId: PomodoroPresetId;
-  workMinutes: number; // 25 hoặc 50 phút
+  workMinutes: number;
   goalId?: string;
   scheduleEventId?: string;
 }
 
-/**
- * Ghi nhận hoàn thành 1 phiên tập trung Pomodoro (25 phút hoặc 50 phút):
- * - Cộng chính xác số phút đã học (workMinutes / 60 giờ) vào Mục tiêu đang chọn
- * - Lưu phiên học vào focusSessions
- * - Nếu gắn với một công việc trong lịch (scheduleEventId), đánh dấu công việc đó là hoàn thành
- */
 export function recordPomodoroWorkSessionInState(
   state: AppDatabaseState,
   input: RecordPomodoroWorkInput
@@ -352,6 +392,40 @@ export function recordPomodoroWorkSessionInState(
   });
 }
 
+export interface RecordExerciseSessionInput {
+  exerciseType: ExerciseType;
+  completedReps: number;
+  targetReps: number;
+  durationMinutes?: number;
+}
+
+export function recordExerciseSessionInState(
+  state: AppDatabaseState,
+  input: RecordExerciseSessionInput
+): AppDatabaseState {
+  const nowIso = new Date().toISOString();
+  const mins = Math.max(1, input.durationMinutes ?? 5);
+  const startedIso = new Date(Date.now() - mins * 60 * 1000).toISOString();
+
+  const newSession: FocusSession = {
+    id: `session-ex-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    mode: "exercise_break",
+    startedAt: startedIso,
+    endedAt: nowIso,
+    durationMinutes: mins,
+    focusScorePercent: 100,
+    distractionCount: 0,
+    exerciseType: input.exerciseType,
+    completedReps: input.completedReps,
+    targetReps: input.targetReps,
+  };
+
+  return saveAppState({
+    ...state,
+    focusSessions: [...state.focusSessions, newSession],
+  });
+}
+
 export function deleteScheduleEventFromState(
   state: AppDatabaseState,
   eventId: string
@@ -385,6 +459,28 @@ export function applySuggestedActionToState(
     goalId: action.goalId,
     notes: "Được đề xuất bởi Cố vấn AI Mentor",
   });
+}
+
+/**
+ * Trạng thái sạch hoàn toàn như khi người dùng mới bắt đầu sử dụng (0 mục tiêu, 0 lịch, 0 phiên học)
+ */
+export function createEmptyState(): AppDatabaseState {
+  const nowIso = new Date().toISOString();
+  return {
+    goals: [],
+    scheduleEvents: [],
+    focusSessions: [],
+    aiMessages: [
+      {
+        id: "msg-onboarding",
+        role: "assistant",
+        content:
+          "Chào mừng cậu đến với EduFocus AI v1.1! Hiện tại tài khoản của cậu đang ở trạng thái mới hoàn toàn. Hãy bắt đầu bằng cách tạo Mục tiêu đầu tiên tại mục Lịch trình & Mục tiêu, sau đó khởi động phiên Pomodoro 25/5 hoặc 50/15 để tích lũy từng phút học thực tế nhé!",
+        createdAt: nowIso,
+      },
+    ],
+    updatedAt: nowIso,
+  };
 }
 
 export function createDefaultState(): AppDatabaseState {
@@ -527,7 +623,17 @@ export function loadAppState(): AppDatabaseState {
     if (!parsed || !Array.isArray(parsed.goals)) {
       return createDefaultState();
     }
-    return parsed;
+    return {
+      goals: parsed.goals,
+      scheduleEvents: Array.isArray(parsed.scheduleEvents)
+        ? parsed.scheduleEvents
+        : [],
+      focusSessions: Array.isArray(parsed.focusSessions)
+        ? parsed.focusSessions
+        : [],
+      aiMessages: Array.isArray(parsed.aiMessages) ? parsed.aiMessages : [],
+      updatedAt: parsed.updatedAt || new Date().toISOString(),
+    };
   } catch {
     return createDefaultState();
   }
@@ -541,6 +647,7 @@ export function saveAppState(state: AppDatabaseState): AppDatabaseState {
   if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      notifyStateChange();
     } catch {
       // Ignore quota errors in restricted environments
     }
@@ -553,9 +660,23 @@ export function resetAppState(): AppDatabaseState {
   if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+      notifyStateChange();
     } catch {
       // Ignore storage errors
     }
   }
   return initial;
+}
+
+export function clearToEmptyState(): AppDatabaseState {
+  const empty = createEmptyState();
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(empty));
+      notifyStateChange();
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  return empty;
 }

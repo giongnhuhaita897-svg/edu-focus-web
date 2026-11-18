@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Camera,
@@ -12,13 +12,22 @@ import {
   CheckCircle2,
   Timer,
   Sparkles,
+  Shield,
+  Plus,
 } from "lucide-react";
 import {
+  AppDatabaseState,
   ExerciseType,
   FocusSessionMode,
   PomodoroPresetId,
 } from "@/types/database";
 import { POMODORO_PRESETS } from "@/modules/pomodoro/PomodoroHub";
+import {
+  createDefaultState,
+  loadAppState,
+  recordExerciseSessionInState,
+  STATE_CHANGE_EVENT,
+} from "@/lib/storage/local-db";
 
 interface ExerciseOption {
   id: ExerciseType;
@@ -51,24 +60,55 @@ export const WEBCAM_EXERCISES: ExerciseOption[] = [
   },
 ];
 
+type PrivacyMode = "standard" | "skeleton_only" | "minimal";
+
 export function WebcamPlaceholder() {
+  const [dbState, setDbState] = useState<AppDatabaseState>(() =>
+    createDefaultState()
+  );
   const [activeTab, setActiveTab] = useState<FocusSessionMode>("study_focus");
   const [selectedPreset, setSelectedPreset] =
     useState<PomodoroPresetId>("25_5");
   const [selectedExercise, setSelectedExercise] =
     useState<ExerciseType>("overhead_reach");
+  const [privacyMode, setPrivacyMode] = useState<PrivacyMode>("skeleton_only");
+  const [currentReps, setCurrentReps] = useState<number>(0);
+  const [exerciseBanner, setExerciseBanner] = useState<string>("");
+
+  useEffect(() => {
+    const refresh = () => setDbState(loadAppState());
+    refresh();
+    window.addEventListener(STATE_CHANGE_EVENT, refresh);
+    return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
+  }, []);
 
   const currentPreset = POMODORO_PRESETS[selectedPreset];
   const currentExercise =
     WEBCAM_EXERCISES.find((e) => e.id === selectedExercise) ??
     WEBCAM_EXERCISES[0];
 
+  const handleSaveExerciseSession = () => {
+    const repsToSave =
+      currentReps > 0 ? currentReps : currentExercise.targetReps;
+    const next = recordExerciseSessionInState(dbState, {
+      exerciseType: selectedExercise,
+      completedReps: repsToSave,
+      targetReps: currentExercise.targetReps,
+      durationMinutes: currentPreset.breakMinutes,
+    });
+    setDbState(next);
+    setCurrentReps(0);
+    setExerciseBanner(
+      `Đã lưu phiên vận động "${currentExercise.name}" (+${repsToSave} nhịp tập) vào hồ sơ kỷ luật!`
+    );
+  };
+
   return (
     <div className="space-y-6">
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
-            Thị giác máy tính &amp; Rèn luyện kỷ luật
+            Phiên bản v1.1+ • Thị giác máy tính &amp; Bảo vệ quyền riêng tư
           </span>
           <h1 className="mt-2 text-2xl md:text-3xl font-bold text-edtech-text">
             Phòng Kỷ luật Tập trung với Webcam
@@ -87,6 +127,26 @@ export function WebcamPlaceholder() {
           <span>Mở mục Pomodoro riêng</span>
         </Link>
       </header>
+
+      {exerciseBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-semibold text-edtech-success flex items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden={true} />
+            <span>{exerciseBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExerciseBanner("")}
+            className="underline text-edtech-muted hover:text-edtech-text"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       {/* Thanh chọn 2 mục trong Phòng Kỷ luật Webcam */}
       <div className="bg-edtech-surface rounded-2xl border border-edtech-border p-2 shadow-sm">
@@ -141,6 +201,55 @@ export function WebcamPlaceholder() {
         </div>
       </div>
 
+      {/* Bảng chọn Chế độ Quyền riêng tư (Privacy Controls v1.1+) */}
+      <section
+        aria-label="Tùy chọn bảo vệ quyền riêng tư Webcam"
+        className="p-4 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+      >
+        <div className="flex items-center gap-2.5">
+          <Shield
+            className="w-5 h-5 text-edtech-success shrink-0"
+            aria-hidden={true}
+          />
+          <div>
+            <p className="text-xs font-bold text-edtech-text">
+              Chế độ Quyền riêng tư Camera (Xử lý 100% tại trình duyệt)
+            </p>
+            <p className="text-xs text-edtech-muted">
+              Không gửi hoặc lưu bất kỳ hình ảnh/video nào lên máy chủ.
+            </p>
+          </div>
+        </div>
+
+        <div
+          role="group"
+          aria-label="Chọn chế độ hiển thị camera"
+          className="inline-flex flex-wrap gap-1.5 bg-edtech-bg p-1 rounded-xl border border-edtech-border"
+        >
+          {(
+            [
+              { id: "skeleton_only", label: "Ẩn mặt (Chỉ hiện khung xương)" },
+              { id: "standard", label: "Hiển thị Camera" },
+              { id: "minimal", label: "Tối giản (Chỉ hiện trạng thái)" },
+            ] as const
+          ).map((mode) => (
+            <button
+              key={mode.id}
+              type="button"
+              onClick={() => setPrivacyMode(mode.id)}
+              aria-pressed={privacyMode === mode.id}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                privacyMode === mode.id
+                  ? "bg-edtech-primary text-white"
+                  : "text-edtech-muted hover:text-edtech-text"
+              }`}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
       {/* MỤC 1: GIÁM SÁT KHI NGỒI HỌC HAY TẬP TRUNG HỌC */}
       <div
         role="tabpanel"
@@ -174,7 +283,12 @@ export function WebcamPlaceholder() {
                     className="w-2 h-2 rounded-full bg-emerald-400"
                     aria-hidden="true"
                   />
-                  AI Vision: Sẵn sàng theo dõi khuôn mặt &amp; tư thế
+                  AI Vision:{" "}
+                  {privacyMode === "skeleton_only"
+                    ? "Chế độ Khung xương Ẩn mặt"
+                    : privacyMode === "minimal"
+                    ? "Chế độ Chỉ báo Tối giản"
+                    : "Sẵn sàng theo dõi khuôn mặt & tư thế"}
                 </span>
                 <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-blue-300 border border-slate-700">
                   Chu kỳ kèm theo: {currentPreset.label}
@@ -272,7 +386,7 @@ export function WebcamPlaceholder() {
 
             <p className="text-xs text-edtech-muted leading-relaxed">
               Chọn cấu trúc thời gian Học/Làm &amp; Nghỉ để đồng bộ cùng phiên
-              giám sát webcam (sẵn sàng kết nối tự động khi bật camera):
+              giám sát webcam:
             </p>
 
             <div className="space-y-2.5">
@@ -328,7 +442,9 @@ export function WebcamPlaceholder() {
               <p className="text-xs text-edtech-text leading-relaxed">
                 Khi hết {currentPreset.workMinutes} phút ngồi học, hệ thống sẽ
                 gợi ý chuyển sang tab{" "}
-                <strong>Giám sát Tập thể dục ({currentPreset.breakMinutes} phút)</strong>{" "}
+                <strong>
+                  Giám sát Tập thể dục ({currentPreset.breakMinutes} phút)
+                </strong>{" "}
                 để vận động chống buồn ngủ.
               </p>
             </div>
@@ -392,12 +508,14 @@ export function WebcamPlaceholder() {
                 <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
                   <p className="text-slate-400">Số nhịp hoàn thành</p>
                   <p className="mt-0.5 font-bold text-emerald-400">
-                    0 / {currentExercise.targetReps} nhịp
+                    {currentReps} / {currentExercise.targetReps} nhịp
                   </p>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
                   <p className="text-slate-400">Độ chuẩn biên độ</p>
-                  <p className="mt-0.5 font-bold text-white">Chờ khởi động</p>
+                  <p className="mt-0.5 font-bold text-white">
+                    {currentReps > 0 ? "Biên độ chuẩn ✓" : "Chờ khởi động"}
+                  </p>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
                   <p className="text-slate-400">Pha Nghỉ Pomodoro</p>
@@ -406,6 +524,36 @@ export function WebcamPlaceholder() {
                   </p>
                 </div>
               </div>
+            </div>
+
+            {/* Thanh điều khiển đếm thử & lưu phiên tập vào hồ sơ */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentReps((r) => r + 1)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-edtech-bg hover:bg-slate-200/80 text-edtech-text text-xs font-bold border border-edtech-border transition-colors"
+                >
+                  <Plus className="w-4 h-4 text-edtech-success" aria-hidden={true} />
+                  <span>Đếm +1 nhịp chuẩn</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentReps(0)}
+                  className="px-3 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-edtech-muted text-xs font-semibold border border-edtech-border transition-colors"
+                >
+                  Đặt lại 0
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveExerciseSession}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-edtech-success hover:bg-emerald-600 text-white text-xs font-bold shadow-sm transition-colors"
+              >
+                <CheckCircle2 className="w-4 h-4" aria-hidden={true} />
+                <span>Lưu phiên vận động vào Hồ sơ</span>
+              </button>
             </div>
           </div>
 
@@ -426,7 +574,10 @@ export function WebcamPlaceholder() {
                   <button
                     key={ex.id}
                     type="button"
-                    onClick={() => setSelectedExercise(ex.id)}
+                    onClick={() => {
+                      setSelectedExercise(ex.id);
+                      setCurrentReps(0);
+                    }}
                     aria-pressed={isSelected}
                     className={`w-full text-left p-3.5 rounded-xl border transition-colors ${
                       isSelected
