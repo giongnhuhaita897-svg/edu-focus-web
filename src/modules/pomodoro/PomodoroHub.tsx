@@ -12,12 +12,21 @@ import {
   Camera,
   CheckCircle2,
   ArrowRightLeft,
+  Target,
+  Briefcase,
 } from "lucide-react";
 import {
+  AppDatabaseState,
   PomodoroPhase,
   PomodoroPreset,
   PomodoroPresetId,
 } from "@/types/database";
+import {
+  createDefaultState,
+  formatHoursAndMinutes,
+  loadAppState,
+  recordPomodoroWorkSessionInState,
+} from "@/lib/storage/local-db";
 
 export const POMODORO_PRESETS: Record<PomodoroPresetId, PomodoroPreset> = {
   "25_5": {
@@ -46,10 +55,24 @@ export function formatSecondsToMMSS(totalSeconds: number): string {
 }
 
 export function PomodoroHub() {
+  const [dbState, setDbState] = useState<AppDatabaseState>(() =>
+    createDefaultState()
+  );
   const [presetId, setPresetId] = useState<PomodoroPresetId>("25_5");
   const [phase, setPhase] = useState<PomodoroPhase>("work");
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [completedCycles, setCompletedCycles] = useState<number>(2);
+  const [selectedGoalId, setSelectedGoalId] = useState<string>("goal-dsa");
+  const [selectedEventId, setSelectedEventId] = useState<string>("");
+  const [sessionBanner, setSessionBanner] = useState<string>("");
+
+  useEffect(() => {
+    const loaded = loadAppState();
+    setDbState(loaded);
+    if (loaded.goals.length > 0) {
+      setSelectedGoalId(loaded.goals[0].id);
+    }
+  }, []);
 
   const currentPreset = POMODORO_PRESETS[presetId];
   const initialSeconds =
@@ -68,22 +91,63 @@ export function PomodoroHub() {
     );
   }, [presetId, phase]);
 
+  const syncWithServer = (nextState: AppDatabaseState) => {
+    setDbState(nextState);
+    if (typeof window !== "undefined" && typeof window.fetch === "function") {
+      window
+        .fetch("/api/state", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextState),
+        })
+        .catch(() => {});
+    }
+  };
+
+  const handleCompleteWorkSession = () => {
+    const workMins = currentPreset.workMinutes;
+    const next = recordPomodoroWorkSessionInState(dbState, {
+      presetId,
+      workMinutes: workMins,
+      goalId: selectedGoalId || undefined,
+      scheduleEventId: selectedEventId || undefined,
+    });
+    syncWithServer(next);
+    setCompletedCycles((c) => c + 1);
+    setIsRunning(false);
+
+    const targetGoal = next.goals.find((g) => g.id === selectedGoalId);
+    setSessionBanner(
+      targetGoal
+        ? `Hoàn thành phiên tập trung ${workMins} phút! Đã cộng chính xác +${workMins} phút vào mục tiêu "${targetGoal.title}" (Tổng: ${formatHoursAndMinutes(
+            targetGoal.completedHours
+          )} / ${targetGoal.targetHours} giờ).`
+        : `Hoàn thành phiên tập trung ${workMins} phút! Hãy nghỉ giải lao ${currentPreset.breakMinutes} phút nhé.`
+    );
+    setPhase("break");
+  };
+
   useEffect(() => {
     if (!isRunning) return;
     const interval = window.setInterval(() => {
       setSecondsLeft((prev) => {
         if (prev <= 1) {
           setIsRunning(false);
-          if (phase === "work") {
-            setCompletedCycles((c) => c + 1);
-          }
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [isRunning, phase]);
+  }, [isRunning]);
+
+  // Khi đồng hồ đếm ngược pha Học/Làm chạm mốc 0, tự động ghi nhận phiên học
+  useEffect(() => {
+    if (secondsLeft === 0 && phase === "work") {
+      handleCompleteWorkSession();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secondsLeft]);
 
   const progressPercent =
     initialSeconds > 0
@@ -99,6 +163,19 @@ export function PomodoroHub() {
     setPhase((prev) => (prev === "work" ? "break" : "work"));
   };
 
+  const handleSelectEvent = (eventId: string) => {
+    setSelectedEventId(eventId);
+    const foundEvt = dbState.scheduleEvents.find((e) => e.id === eventId);
+    if (foundEvt?.goalId) {
+      setSelectedGoalId(foundEvt.goalId);
+    }
+  };
+
+  const selectedGoal = dbState.goals.find((g) => g.id === selectedGoalId);
+  const selectedEvent = dbState.scheduleEvents.find(
+    (e) => e.id === selectedEventId
+  );
+
   return (
     <div className="space-y-8">
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -110,8 +187,9 @@ export function PomodoroHub() {
             Đồng hồ Kỷ luật Pomodoro (25/5 &amp; 50/15)
           </h1>
           <p className="mt-1 text-sm text-edtech-muted">
-            Phân chia rõ cấu trúc Học hoặc Làm việc đan xen Nghỉ giải lao khoa
-            học, đồng bộ trực tiếp với Phòng Kỷ luật Webcam.
+            Chọn công việc và mục tiêu đang làm trước khi bắt đầu. Số phút học
+            thực tế (25 phút hoặc 50 phút) sẽ được cộng dồn chính xác vào mục
+            tiêu sau khi hoàn tất phiên tập trung.
           </p>
         </div>
 
@@ -123,6 +201,26 @@ export function PomodoroHub() {
           <span>Mở kèm Giám sát Webcam</span>
         </Link>
       </header>
+
+      {sessionBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-semibold text-edtech-success flex items-center justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden={true} />
+            <span>{sessionBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSessionBanner("")}
+            className="text-xs underline text-edtech-muted hover:text-edtech-text shrink-0"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       {/* Chọn cấu trúc 25/5 hoặc 50/15 */}
       <section aria-label="Chọn chế độ chu kỳ Pomodoro">
@@ -175,6 +273,109 @@ export function PomodoroHub() {
             }
           )}
         </div>
+      </section>
+
+      {/* Khu vực Chọn Công việc & Mục tiêu đang làm để tích hợp cộng dồn số phút chuẩn xác */}
+      <section
+        aria-label="Chọn công việc và mục tiêu đang thực hiện"
+        className="p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Briefcase
+              className="w-5 h-5 text-edtech-primary"
+              aria-hidden={true}
+            />
+            <h2 className="text-base font-bold text-edtech-text">
+              Công việc &amp; Mục tiêu Đang Thực hiện trong Phiên Tập trung
+            </h2>
+          </div>
+          <span className="text-xs font-semibold text-edtech-success">
+            +{currentPreset.workMinutes} phút sẽ được cộng khi hoàn tất phiên
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label
+              htmlFor="pomodoro-task-select"
+              className="block text-xs font-bold text-edtech-text mb-1.5"
+            >
+              1. Chọn công việc trong Lịch trình (tùy chọn)
+            </label>
+            <select
+              id="pomodoro-task-select"
+              name="scheduleEventId"
+              value={selectedEventId}
+              onChange={(e) => handleSelectEvent(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
+            >
+              <option value="">
+                -- Tự học ngoài lịch (Chỉ cộng giờ vào Mục tiêu) --
+              </option>
+              {dbState.scheduleEvents.map((evt) => (
+                <option key={evt.id} value={evt.id}>
+                  [{evt.startTime}-{evt.endTime}] {evt.title}{" "}
+                  {evt.status === "completed" ? "(Đã xong)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label
+              htmlFor="pomodoro-goal-select"
+              className="block text-xs font-bold text-edtech-text mb-1.5"
+            >
+              2. Mục tiêu nhận tích lũy thời gian học (+
+              {currentPreset.workMinutes} phút)
+            </label>
+            <select
+              id="pomodoro-goal-select"
+              name="goalId"
+              value={selectedGoalId}
+              onChange={(e) => setSelectedGoalId(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
+            >
+              {dbState.goals.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.title} ({formatHoursAndMinutes(g.completedHours)} /{" "}
+                  {g.targetHours} giờ)
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {selectedGoal && (
+          <div className="p-4 rounded-xl bg-edtech-bg border border-edtech-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-edtech-primary">
+                <Target className="w-4 h-4" aria-hidden={true} />
+                <span>Đang tích lũy cho: {selectedGoal.title}</span>
+              </div>
+              <p className="text-xs text-edtech-muted">
+                {selectedEvent
+                  ? `Công việc hiện tại: ${selectedEvent.title}`
+                  : "Đang tập trung làm việc trực tiếp cho mục tiêu này."}
+              </p>
+            </div>
+            <div className="text-left sm:text-right shrink-0">
+              <p
+                data-testid="pomodoro-selected-goal-progress"
+                className="text-xs font-bold text-edtech-text"
+              >
+                Đã tích lũy: {formatHoursAndMinutes(selectedGoal.completedHours)}{" "}
+                / {selectedGoal.targetHours} giờ ({selectedGoal.progressPercent}
+                %)
+              </p>
+              <p className="text-xs text-edtech-success font-medium">
+                Hoàn thành phiên này sẽ cộng thêm +{currentPreset.workMinutes}{" "}
+                phút
+              </p>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Khung đồng hồ chính & Cấu trúc Học/Làm - Nghỉ */}
@@ -231,8 +432,8 @@ export function PomodoroHub() {
               }`}
             >
               {phase === "work"
-                ? "Đang trong pha Học / Làm việc tập trung"
-                : "Đang trong pha Nghỉ ngơi & Vận động giãn cơ"}
+                ? `Đang tập trung Học / Làm (${currentPreset.workMinutes} phút)`
+                : `Đang trong pha Nghỉ ngơi & Vận động (${currentPreset.breakMinutes} phút)`}
             </span>
             <div
               data-testid="pomodoro-timer-display"
@@ -289,6 +490,19 @@ export function PomodoroHub() {
               )}
             </button>
 
+            {phase === "work" && (
+              <button
+                type="button"
+                onClick={handleCompleteWorkSession}
+                className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-edtech-success text-sm font-bold border border-emerald-200 transition-colors"
+              >
+                <CheckCircle2 className="w-4 h-4" aria-hidden={true} />
+                <span>
+                  Hoàn tất phiên &amp; Cộng +{currentPreset.workMinutes} phút
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleReset}
@@ -318,11 +532,12 @@ export function PomodoroHub() {
         >
           <div>
             <h2 className="text-base font-bold text-edtech-text">
-              Liên kết Phòng Kỷ luật Webcam
+              Cơ chế Tích lũy Phút Học Chuẩn xác
             </h2>
             <p className="mt-1 text-xs text-edtech-muted leading-relaxed">
-              Mỗi chu kỳ Pomodoro 25/5 hoặc 50/15 được thiết kế để tự động phối
-              hợp với 2 mục giám sát trong Phòng Kỷ luật Webcam:
+              Thay vì tự cộng giờ thủ công dễ sai lệch, hệ thống chỉ cộng đúng{" "}
+              <strong>25 phút</strong> hoặc <strong>50 phút</strong> thực tế sau
+              mỗi phiên tập trung hoàn thành:
             </p>
           </div>
 
@@ -332,9 +547,9 @@ export function PomodoroHub() {
                 1. Khi ở Pha Học / Làm ({currentPreset.workMinutes} phút)
               </p>
               <p className="mt-1 text-xs text-edtech-text leading-relaxed">
-                Kích hoạt mục <strong>Giám sát Ngồi học &amp; Tập trung</strong>{" "}
-                để theo dõi tư thế ngồi, cảnh báo khi mất tập trung hoặc có dấu
-                hiệu buồn ngủ / gục đầu.
+                Gắn với công việc &amp; mục tiêu đã chọn. Kết hợp mục{" "}
+                <strong>Giám sát Ngồi học &amp; Tập trung</strong> trong Phòng
+                Kỷ luật để đảm bảo học thật trước khi cộng phút.
               </p>
             </div>
 

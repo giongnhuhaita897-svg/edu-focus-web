@@ -14,6 +14,7 @@ import {
   AlertCircle,
   RotateCcw,
   Filter,
+  Timer,
 } from "lucide-react";
 import {
   addGoalToState,
@@ -22,6 +23,8 @@ import {
   createDefaultState,
   deleteGoalFromState,
   deleteScheduleEventFromState,
+  formatHoursAndMinutes,
+  getDaysRemainingInfo,
   loadAppState,
   resetAppState,
   updateGoalInState,
@@ -94,9 +97,7 @@ export function CalendarPlaceholder() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(nextState),
         })
-        .catch(() => {
-          // LocalStorage đã lưu an toàn kể cả khi offline
-        });
+        .catch(() => {});
     }
   };
 
@@ -159,14 +160,6 @@ export function CalendarPlaceholder() {
     setGoalError("");
   };
 
-  const handleIncrementGoalHour = (goal: Goal) => {
-    const next = updateGoalInState(state, goal.id, {
-      completedHours: goal.completedHours + 1,
-    });
-    syncWithServer(next);
-    setStatusBanner(`Đã cộng +1 giờ tích lũy cho "${goal.title}".`);
-  };
-
   const handleDeleteGoal = (goal: Goal) => {
     const next = deleteGoalFromState(state, goal.id);
     syncWithServer(next);
@@ -214,7 +207,7 @@ export function CalendarPlaceholder() {
     syncWithServer(next);
     setStatusBanner(
       nextStatus === "completed"
-        ? "Đã đánh dấu hoàn thành buổi lịch và cập nhật tiến độ mục tiêu!"
+        ? "Đã đánh dấu hoàn thành buổi lịch!"
         : nextStatus === "missed"
         ? "Đã đánh dấu buổi lịch là bỏ lỡ."
         : "Đã chuyển buổi lịch về trạng thái dự kiến."
@@ -268,8 +261,9 @@ export function CalendarPlaceholder() {
             Hệ thống Lịch trình &amp; Mục tiêu Cá nhân
           </h1>
           <p className="mt-1 text-sm text-edtech-muted">
-            Thiết lập mục tiêu dài hạn, lên lịch học tập &amp; vận động theo
-            khung giờ và tự động cộng giờ tích lũy khi hoàn thành.
+            Thiết lập mục tiêu kèm đếm ngược số ngày còn lại. Thời gian học
+            được cộng dồn chuẩn xác (25 phút / 50 phút) khi hoàn thành phiên
+            tập trung Pomodoro.
           </p>
         </div>
 
@@ -320,7 +314,8 @@ export function CalendarPlaceholder() {
             {state.goals.length} mục tiêu
           </p>
           <p className="mt-1 text-xs text-edtech-muted">
-            Tích lũy {totalCompletedHours} / {totalTargetHours} giờ mục tiêu
+            Tích lũy {formatHoursAndMinutes(totalCompletedHours)} /{" "}
+            {totalTargetHours} giờ mục tiêu
           </p>
         </div>
 
@@ -338,14 +333,14 @@ export function CalendarPlaceholder() {
             {completedEventsCount} / {state.scheduleEvents.length} buổi
           </p>
           <p className="mt-1 text-xs text-edtech-success font-medium">
-            Tự động đồng bộ vào tiến độ mục tiêu
+            Kết nối trực tiếp với phiên tập trung Pomodoro
           </p>
         </div>
 
         <div className="p-5 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-edtech-muted">
-              Phòng Kỷ luật Webcam
+              Tích lũy giờ học chuẩn
             </span>
             <Camera
               className="w-5 h-5 text-edtech-primary"
@@ -353,13 +348,13 @@ export function CalendarPlaceholder() {
             />
           </div>
           <p className="mt-2 text-base font-bold text-edtech-text">
-            Sẵn sàng cho ca học kế tiếp
+            Cộng phút qua phiên 25/5 &amp; 50/15
           </p>
           <Link
-            href="/webcam"
+            href="/pomodoro"
             className="mt-1 inline-block text-xs font-semibold text-edtech-primary hover:underline"
           >
-            Chuyển tới Phòng Kỷ luật →
+            Mở Đồng hồ Pomodoro để học →
           </Link>
         </div>
       </section>
@@ -544,7 +539,7 @@ export function CalendarPlaceholder() {
           aria-labelledby="goal-list-heading"
           className="lg:col-span-7 p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
         >
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h2
               id="goal-list-heading"
               className="text-lg font-bold text-edtech-text"
@@ -552,7 +547,7 @@ export function CalendarPlaceholder() {
               Danh sách Mục tiêu Cá nhân ({state.goals.length})
             </h2>
             <span className="text-xs text-edtech-muted">
-              Bấm &ldquo;+1h học&rdquo; hoặc hoàn thành lịch để tăng tiến độ
+              Số phút được cộng tự động khi học xong 25p/50p tại Pomodoro
             </span>
           </div>
 
@@ -562,84 +557,104 @@ export function CalendarPlaceholder() {
             </p>
           ) : (
             <ul className="space-y-3.5">
-              {state.goals.map((goal) => (
-                <li
-                  key={goal.id}
-                  data-testid={`goal-card-${goal.id}`}
-                  className="p-4 rounded-xl bg-edtech-bg border border-edtech-border space-y-3"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="px-2.5 py-0.5 rounded-md text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
-                          {CATEGORY_LABELS[goal.category]}
+              {state.goals.map((goal) => {
+                const remaining = getDaysRemainingInfo(goal.deadline, today);
+
+                return (
+                  <li
+                    key={goal.id}
+                    data-testid={`goal-card-${goal.id}`}
+                    className="p-4 rounded-xl bg-edtech-bg border border-edtech-border space-y-3"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2.5 py-0.5 rounded-md text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
+                            {CATEGORY_LABELS[goal.category]}
+                          </span>
+                          <span className="text-xs text-edtech-muted font-medium">
+                            Hạn: {goal.deadline}
+                          </span>
+                          <span
+                            data-testid={`goal-days-left-${goal.id}`}
+                            className={`px-2 py-0.5 rounded-md text-xs font-bold border ${
+                              remaining.isOverdue
+                                ? "bg-red-50 text-edtech-danger border-red-200"
+                                : remaining.isUrgent
+                                ? "bg-amber-50 text-amber-700 border-amber-200"
+                                : "bg-slate-200/70 text-edtech-text border-slate-300"
+                            }`}
+                          >
+                            {remaining.label}
+                          </span>
+                        </div>
+                        <h3 className="text-sm font-bold text-edtech-text">
+                          {goal.title}
+                        </h3>
+                        {goal.description && (
+                          <p className="text-xs text-edtech-muted leading-relaxed">
+                            {goal.description}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <Link
+                          href="/pomodoro"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-edtech-primary text-xs font-bold border border-blue-200 transition-colors"
+                        >
+                          <Timer className="w-3.5 h-3.5" aria-hidden={true} />
+                          <span>Học Pomodoro</span>
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditGoal(goal)}
+                          aria-label={`Sửa mục tiêu ${goal.title}`}
+                          className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-edtech-text border border-edtech-border transition-colors"
+                        >
+                          <Edit3 className="w-4 h-4" aria-hidden={true} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteGoal(goal)}
+                          aria-label={`Xóa mục tiêu ${goal.title}`}
+                          className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-edtech-danger border border-edtech-border transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" aria-hidden={true} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-edtech-muted">
+                          Đã tích lũy:{" "}
+                          <strong className="text-edtech-text">
+                            {formatHoursAndMinutes(goal.completedHours)}
+                          </strong>{" "}
+                          / {goal.targetHours} giờ
                         </span>
-                        <span className="text-xs text-edtech-muted">
-                          Hạn: {goal.deadline}
+                        <span className="font-bold text-edtech-success">
+                          {goal.progressPercent}%
                         </span>
                       </div>
-                      <h3 className="text-sm font-bold text-edtech-text">
-                        {goal.title}
-                      </h3>
-                      {goal.description && (
-                        <p className="text-xs text-edtech-muted leading-relaxed">
-                          {goal.description}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => handleIncrementGoalHour(goal)}
-                        className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-edtech-success text-xs font-bold border border-emerald-200 transition-colors"
-                      >
-                        +1h học
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleStartEditGoal(goal)}
-                        aria-label={`Sửa mục tiêu ${goal.title}`}
-                        className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-edtech-text border border-edtech-border transition-colors"
-                      >
-                        <Edit3 className="w-4 h-4" aria-hidden={true} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteGoal(goal)}
-                        aria-label={`Xóa mục tiêu ${goal.title}`}
-                        className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-edtech-danger border border-edtech-border transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" aria-hidden={true} />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-edtech-muted">
-                        Tiến độ: {goal.completedHours} / {goal.targetHours} giờ
-                      </span>
-                      <span className="font-bold text-edtech-success">
-                        {goal.progressPercent}%
-                      </span>
-                    </div>
-                    <div
-                      className="w-full h-2 rounded-full bg-slate-200 overflow-hidden"
-                      role="progressbar"
-                      aria-valuenow={goal.progressPercent}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-label={`Tiến độ ${goal.title}`}
-                    >
                       <div
-                        className="h-full bg-edtech-success rounded-full transition-all"
-                        style={{ width: `${goal.progressPercent}%` }}
-                      />
+                        className="w-full h-2 rounded-full bg-slate-200 overflow-hidden"
+                        role="progressbar"
+                        aria-valuenow={goal.progressPercent}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={`Tiến độ ${goal.title}`}
+                      >
+                        <div
+                          className="h-full bg-edtech-success rounded-full transition-all"
+                          style={{ width: `${goal.progressPercent}%` }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
@@ -793,7 +808,7 @@ export function CalendarPlaceholder() {
                 htmlFor="event-goal"
                 className="block text-xs font-bold text-edtech-text mb-1"
               >
-                Liên kết với Mục tiêu (để tự động cộng giờ khi hoàn thành)
+                Liên kết với Mục tiêu (để chọn nhanh trong phòng Pomodoro)
               </label>
               <select
                 id="event-goal"
@@ -963,7 +978,8 @@ export function CalendarPlaceholder() {
                             {evt.date} • {evt.startTime} - {evt.endTime}
                           </span>
                           <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-200/80 text-edtech-text">
-                            {EVENT_TYPE_LABELS[evt.type]} ({durationHours}h)
+                            {EVENT_TYPE_LABELS[evt.type]} (
+                            {formatHoursAndMinutes(durationHours)})
                           </span>
                           <span
                             className={`px-2 py-0.5 rounded-md text-xs font-bold ${
@@ -1005,6 +1021,16 @@ export function CalendarPlaceholder() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        {!isDone && (
+                          <Link
+                            href="/pomodoro"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-edtech-primary text-xs font-bold border border-blue-200 transition-colors"
+                          >
+                            <Timer className="w-3.5 h-3.5" aria-hidden={true} />
+                            <span>Bắt đầu học</span>
+                          </Link>
+                        )}
+
                         {isDone ? (
                           <button
                             type="button"

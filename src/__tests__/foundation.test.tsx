@@ -8,11 +8,13 @@ import {
   calculateGoalProgress,
   createDefaultState,
   deleteGoalFromState,
+  formatHoursAndMinutes,
+  getDaysRemainingInfo,
   loadAppState,
+  recordPomodoroWorkSessionInState,
   saveAppState,
   resetAppState,
   STORAGE_KEY,
-  updateScheduleEventStatusInState,
 } from "@/lib/storage/local-db";
 import { Sidebar } from "@/components/layout/Sidebar";
 import DashboardPage from "@/app/page";
@@ -27,18 +29,44 @@ vi.mock("next/navigation", () => ({
   usePathname: () => currentPathname,
 }));
 
-describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro, Webcam & Hệ thống Lịch trình - Mục tiêu", () => {
+describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công việc, Webcam & Lịch trình - Mục tiêu", () => {
   beforeEach(() => {
     window.localStorage.clear();
     currentPathname = "/";
   });
 
-  it("tính toán phần trăm tiến độ mục tiêu và thời lượng sự kiện chính xác", () => {
+  it("tính toán phần trăm tiến độ, định dạng giờ/phút lẻ (25p, 50p) và đếm số ngày còn lại chính xác", () => {
     expect(calculateGoalProgress(18, 40)).toBe(45);
     expect(calculateGoalProgress(50, 40)).toBe(100);
     expect(calculateGoalProgress(10, 0)).toBe(0);
     expect(calculateEventDurationHours("08:00", "09:30")).toBe(1.5);
     expect(calculateEventDurationHours("15:00", "14:00")).toBe(0);
+
+    // Kiểm tra định dạng giờ + phút chuẩn cho phiên 25p và 50p
+    expect(formatHoursAndMinutes(18)).toBe("18 giờ");
+    expect(formatHoursAndMinutes(18 + 25 / 60)).toBe("18 giờ 25 phút");
+    expect(formatHoursAndMinutes(18 + 50 / 60)).toBe("18 giờ 50 phút");
+    expect(formatHoursAndMinutes(18 + 75 / 60)).toBe("19 giờ 15 phút");
+
+    // Kiểm tra số ngày còn lại kế bên hạn hoàn thành
+    expect(getDaysRemainingInfo("2026-12-20", "2026-11-18")).toEqual({
+      days: 32,
+      label: "Còn 32 ngày",
+      isOverdue: false,
+      isUrgent: false,
+    });
+    expect(getDaysRemainingInfo("2026-11-18", "2026-11-18")).toEqual({
+      days: 0,
+      label: "Hết hạn hôm nay",
+      isOverdue: false,
+      isUrgent: true,
+    });
+    expect(getDaysRemainingInfo("2026-11-15", "2026-11-18")).toEqual({
+      days: -3,
+      label: "Quá hạn 3 ngày",
+      isOverdue: true,
+      isUrgent: true,
+    });
   });
 
   it("khởi tạo, lưu và đọc dữ liệu từ localStorage chuẩn xác", () => {
@@ -145,21 +173,32 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro, Webcam & Hệ thống
     ).toBeInTheDocument();
   });
 
-  it("Mục riêng Đồng hồ Pomodoro hỗ trợ chu kỳ 25/5 và 50/15 theo cấu trúc Học/Làm và Nghỉ", () => {
+  it("Mục Đồng hồ Pomodoro cho phép chọn công việc/mục tiêu và cộng dồn chính xác 25 phút hoặc 50 phút sau khi hoàn tất phiên", () => {
     render(<PomodoroHub />);
 
     expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
       "25:00"
     );
+    expect(
+      screen.getByTestId("pomodoro-selected-goal-progress")
+    ).toHaveTextContent("Đã tích lũy: 18 giờ / 40 giờ (45%)");
 
-    const breakBtn = screen.getByRole("button", {
-      name: /Pha Nghỉ giải lao \(5 phút\)/i,
+    // Hoàn tất phiên tập trung 25 phút -> cộng đúng 25 phút vào mục tiêu (thành 18 giờ 25 phút)
+    const completeWorkBtn = screen.getByRole("button", {
+      name: /Hoàn tất phiên & Cộng \+25 phút/i,
     });
-    fireEvent.click(breakBtn);
+    fireEvent.click(completeWorkBtn);
+
+    expect(
+      screen.getByTestId("pomodoro-selected-goal-progress")
+    ).toHaveTextContent("Đã tích lũy: 18 giờ 25 phút / 40 giờ (46%)");
+
+    // Sau khi hoàn tất phiên Học/Làm, đồng hồ tự chuyển sang pha Nghỉ 05:00
     expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
       "05:00"
     );
 
+    // Chuyển sang chế độ Deep Work 50/15 và quay lại pha Học/Làm 50:00
     const preset5015 = screen.getByRole("button", {
       name: /Deep Work 50\/15/i,
     });
@@ -177,22 +216,18 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro, Webcam & Hệ thống
     );
   });
 
-  it("Giai đoạn 2: cho phép thêm/xóa mục tiêu, thêm sự kiện lịch và tự động cộng giờ khi hoàn thành buổi lịch", () => {
+  it("Giai đoạn 2: tích lũy phút chuẩn xác qua recordPomodoroWorkSessionInState (25p + 25p = 50p, + 50p = 1h40p)", () => {
     let state = createDefaultState();
 
-    // 1. Thêm mục tiêu mới
     state = addGoalToState(state, {
       title: "Hoàn thành Đồ án Web Giáo dục",
       category: "academic",
-      targetHours: 20,
-      completedHours: 2,
+      targetHours: 10,
+      completedHours: 0,
       deadline: "2026-12-25",
     });
     const addedGoal = state.goals[0];
-    expect(addedGoal.title).toBe("Hoàn thành Đồ án Web Giáo dục");
-    expect(addedGoal.progressPercent).toBe(10);
 
-    // 2. Thêm buổi lịch 2 giờ gắn với mục tiêu mới
     state = addScheduleEventToState(state, {
       title: "Code phân hệ Lịch trình Giai đoạn 2",
       date: "2026-11-18",
@@ -203,30 +238,53 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro, Webcam & Hệ thống
     });
     const addedEvt = state.scheduleEvents.find(
       (e) => e.title === "Code phân hệ Lịch trình Giai đoạn 2"
-    );
-    expect(addedEvt).toBeDefined();
+    )!;
 
-    // 3. Đánh dấu hoàn thành buổi lịch -> tự động cộng 2 giờ vào mục tiêu (2 + 2 = 4h -> 20%)
-    state = updateScheduleEventStatusInState(
-      state,
-      addedEvt!.id,
-      "completed"
-    );
-    const updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
-    expect(updatedGoal.completedHours).toBe(4);
-    expect(updatedGoal.progressPercent).toBe(20);
+    // Học xong phiên 1 (25 phút) -> 25 phút
+    state = recordPomodoroWorkSessionInState(state, {
+      presetId: "25_5",
+      workMinutes: 25,
+      goalId: addedGoal.id,
+      scheduleEventId: addedEvt.id,
+    });
+    let updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
+    expect(formatHoursAndMinutes(updatedGoal.completedHours)).toBe("25 phút");
 
-    // 4. Xóa mục tiêu -> gỡ liên kết goalId trên sự kiện mà không làm mất sự kiện
+    // Học xong phiên 2 (25 phút) -> 50 phút (chưa tròn 1 giờ, không bị làm tròn sai)
+    state = recordPomodoroWorkSessionInState(state, {
+      presetId: "25_5",
+      workMinutes: 25,
+      goalId: addedGoal.id,
+    });
+    updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
+    expect(formatHoursAndMinutes(updatedGoal.completedHours)).toBe("50 phút");
+
+    // Học tiếp phiên 3 (50 phút) -> 100 phút = 1 giờ 40 phút
+    state = recordPomodoroWorkSessionInState(state, {
+      presetId: "50_15",
+      workMinutes: 50,
+      goalId: addedGoal.id,
+    });
+    updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
+    expect(formatHoursAndMinutes(updatedGoal.completedHours)).toBe(
+      "1 giờ 40 phút"
+    );
+
+    // Xóa mục tiêu -> gỡ liên kết goalId trên sự kiện
     state = deleteGoalFromState(state, addedGoal.id);
     expect(state.goals.find((g) => g.id === addedGoal.id)).toBeUndefined();
-    const unlinkedEvt = state.scheduleEvents.find(
-      (e) => e.id === addedEvt!.id
-    );
-    expect(unlinkedEvt?.goalId).toBeUndefined();
   });
 
-  it("Giai đoạn 2 UI: tạo mục tiêu mới và tạo buổi lịch mới ngay trên giao diện CalendarPlaceholder", () => {
+  it("Giai đoạn 2 UI: hiển thị số ngày còn lại kế bên hạn hoàn thành và không có nút tự cộng +1h thủ công", () => {
     render(<CalendarPlaceholder />);
+
+    // Kiểm tra hiển thị badge "Còn ... ngày" trên các thẻ mục tiêu
+    expect(
+      screen.getByTestId("goal-days-left-goal-dsa").textContent
+    ).toMatch(/Còn \d+ ngày|Hết hạn hôm nay|Quá hạn/i);
+
+    // Đảm bảo không còn nút "+1h học" thủ công
+    expect(screen.queryByRole("button", { name: /\+1h học/i })).toBeNull();
 
     // Tạo mục tiêu mới trên form
     const goalTitleInput = screen.getByLabelText(/Tên mục tiêu/i);

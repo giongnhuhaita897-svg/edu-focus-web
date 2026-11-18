@@ -11,7 +11,12 @@ import {
   CalendarCheck2,
   Activity,
 } from "lucide-react";
-import { createDefaultState, loadAppState } from "@/lib/storage/local-db";
+import {
+  createDefaultState,
+  formatHoursAndMinutes,
+  getDaysRemainingInfo,
+  loadAppState,
+} from "@/lib/storage/local-db";
 import { AppDatabaseState } from "@/types/database";
 
 export default function DashboardPage() {
@@ -188,8 +193,9 @@ export default function DashboardPage() {
                       {goal.title}
                     </h3>
                     <p className="mt-0.5 text-xs text-edtech-muted">
-                      {goal.completedHours}/{goal.targetHours} giờ • Hạn:{" "}
-                      {goal.deadline}
+                      {formatHoursAndMinutes(goal.completedHours)} /{" "}
+                      {goal.targetHours} giờ • Hạn: {goal.deadline} (
+                      {getDaysRemainingInfo(goal.deadline).label})
                     </p>
                   </div>
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-edtech-success border border-emerald-200">

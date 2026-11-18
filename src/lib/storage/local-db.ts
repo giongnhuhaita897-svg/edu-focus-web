@@ -1,7 +1,9 @@
 import {
   AppDatabaseState,
+  FocusSession,
   Goal,
   GoalCategory,
+  PomodoroPresetId,
   ScheduleEvent,
   ScheduleEventStatus,
   ScheduleEventType,
@@ -16,6 +18,82 @@ export function calculateGoalProgress(
   if (targetHours <= 0) return 0;
   const raw = Math.round((completedHours / targetHours) * 100);
   return Math.max(0, Math.min(100, raw));
+}
+
+/**
+ * Hiển thị thời lượng tích lũy chính xác theo giờ và phút (khớp với phiên Pomodoro 25p và 50p)
+ * Ví dụ: 18 -> "18 giờ", 18 + 25/60 -> "18 giờ 25 phút", 50/60 -> "50 phút"
+ */
+export function formatHoursAndMinutes(hours: number): string {
+  const totalMinutes = Math.max(0, Math.round(hours * 60));
+  if (totalMinutes === 0) return "0 phút";
+  const hrs = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  if (hrs === 0) return `${mins} phút`;
+  if (mins === 0) return `${hrs} giờ`;
+  return `${hrs} giờ ${mins} phút`;
+}
+
+export interface DaysRemainingInfo {
+  days: number;
+  label: string;
+  isOverdue: boolean;
+  isUrgent: boolean;
+}
+
+/**
+ * Tính số ngày còn lại tính từ ngày hiện tại (YYYY-MM-DD) tới hạn hoàn thành (deadline YYYY-MM-DD)
+ */
+export function getDaysRemainingInfo(
+  deadline: string,
+  referenceDateStr?: string
+): DaysRemainingInfo {
+  const todayStr = referenceDateStr ?? new Date().toISOString().slice(0, 10);
+  const [y1, m1, d1] = todayStr.split("-").map(Number);
+  const [y2, m2, d2] = deadline.split("-").map(Number);
+
+  if (
+    Number.isNaN(y1) ||
+    Number.isNaN(m1) ||
+    Number.isNaN(d1) ||
+    Number.isNaN(y2) ||
+    Number.isNaN(m2) ||
+    Number.isNaN(d2)
+  ) {
+    return {
+      days: 0,
+      label: "Chưa rõ hạn",
+      isOverdue: false,
+      isUrgent: false,
+    };
+  }
+
+  const utcToday = Date.UTC(y1, m1 - 1, d1);
+  const utcDeadline = Date.UTC(y2, m2 - 1, d2);
+  const diffDays = Math.round((utcDeadline - utcToday) / (1000 * 60 * 60 * 24));
+
+  if (diffDays > 0) {
+    return {
+      days: diffDays,
+      label: `Còn ${diffDays} ngày`,
+      isOverdue: false,
+      isUrgent: diffDays <= 7,
+    };
+  }
+  if (diffDays === 0) {
+    return {
+      days: 0,
+      label: "Hết hạn hôm nay",
+      isOverdue: false,
+      isUrgent: true,
+    };
+  }
+  return {
+    days: diffDays,
+    label: `Quá hạn ${Math.abs(diffDays)} ngày`,
+    isOverdue: true,
+    isUrgent: true,
+  };
 }
 
 export function calculateEventDurationHours(
@@ -34,7 +112,7 @@ export function calculateEventDurationHours(
   }
   const diffMinutes = endH * 60 + endM - (startH * 60 + startM);
   if (diffMinutes <= 0) return 0;
-  return Math.round((diffMinutes / 60) * 10) / 10;
+  return Math.round((diffMinutes / 60) * 100) / 100;
 }
 
 export interface CreateGoalInput {
@@ -99,8 +177,8 @@ export function updateGoalInState(
       Math.round(
         (updates.completedHours !== undefined
           ? updates.completedHours
-          : goal.completedHours) * 10
-      ) / 10
+          : goal.completedHours) * 60
+      ) / 60
     );
     const progressPercent = calculateGoalProgress(completedHours, targetHours);
     const status =
@@ -186,49 +264,89 @@ export function updateScheduleEventStatusInState(
     return state;
   }
 
-  const durationHours = calculateEventDurationHours(
-    targetEvent.startTime,
-    targetEvent.endTime
-  );
-  let hourDelta = 0;
-  if (targetEvent.status !== "completed" && nextStatus === "completed") {
-    hourDelta = durationHours;
-  } else if (targetEvent.status === "completed" && nextStatus !== "completed") {
-    hourDelta = -durationHours;
-  }
-
   const nextEvents = state.scheduleEvents.map((evt) =>
     evt.id === eventId ? { ...evt, status: nextStatus } : evt
   );
 
-  const nextGoals =
-    targetEvent.goalId && hourDelta !== 0
-      ? state.goals.map((goal) => {
-          if (goal.id !== targetEvent.goalId) return goal;
-          const completedHours = Math.max(
-            0,
-            Math.round((goal.completedHours + hourDelta) * 10) / 10
-          );
-          const progressPercent = calculateGoalProgress(
-            completedHours,
-            goal.targetHours
-          );
-          return {
-            ...goal,
-            completedHours,
-            progressPercent,
-            status:
-              progressPercent >= 100
-                ? ("completed" as const)
-                : ("active" as const),
-          };
-        })
-      : state.goals;
+  return saveAppState({
+    ...state,
+    scheduleEvents: nextEvents,
+  });
+}
+
+export interface RecordPomodoroWorkInput {
+  presetId: PomodoroPresetId;
+  workMinutes: number; // 25 hoặc 50 phút
+  goalId?: string;
+  scheduleEventId?: string;
+}
+
+/**
+ * Ghi nhận hoàn thành 1 phiên tập trung Pomodoro (25 phút hoặc 50 phút):
+ * - Cộng chính xác số phút đã học (workMinutes / 60 giờ) vào Mục tiêu đang chọn
+ * - Lưu phiên học vào focusSessions
+ * - Nếu gắn với một công việc trong lịch (scheduleEventId), đánh dấu công việc đó là hoàn thành
+ */
+export function recordPomodoroWorkSessionInState(
+  state: AppDatabaseState,
+  input: RecordPomodoroWorkInput
+): AppDatabaseState {
+  const minutes = Math.max(1, Math.round(input.workMinutes));
+  const linkedEvent = input.scheduleEventId
+    ? state.scheduleEvents.find((e) => e.id === input.scheduleEventId)
+    : undefined;
+  const effectiveGoalId = input.goalId || linkedEvent?.goalId;
+
+  const nowIso = new Date().toISOString();
+  const startedIso = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+
+  const newSession: FocusSession = {
+    id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    scheduleEventId: input.scheduleEventId || undefined,
+    mode: "study_focus",
+    pomodoroPreset: input.presetId,
+    startedAt: startedIso,
+    endedAt: nowIso,
+    durationMinutes: minutes,
+    focusScorePercent: 100,
+    distractionCount: 0,
+  };
+
+  const nextGoals = effectiveGoalId
+    ? state.goals.map((goal) => {
+        if (goal.id !== effectiveGoalId) return goal;
+        const currentTotalMinutes = Math.round(goal.completedHours * 60);
+        const nextTotalMinutes = currentTotalMinutes + minutes;
+        const completedHours = nextTotalMinutes / 60;
+        const progressPercent = calculateGoalProgress(
+          completedHours,
+          goal.targetHours
+        );
+        return {
+          ...goal,
+          completedHours,
+          progressPercent,
+          status:
+            progressPercent >= 100
+              ? ("completed" as const)
+              : ("active" as const),
+        };
+      })
+    : state.goals;
+
+  const nextEvents = input.scheduleEventId
+    ? state.scheduleEvents.map((evt) =>
+        evt.id === input.scheduleEventId
+          ? { ...evt, status: "completed" as const }
+          : evt
+      )
+    : state.scheduleEvents;
 
   return saveAppState({
     ...state,
     goals: nextGoals,
     scheduleEvents: nextEvents,
+    focusSessions: [...state.focusSessions, newSession],
   });
 }
 
