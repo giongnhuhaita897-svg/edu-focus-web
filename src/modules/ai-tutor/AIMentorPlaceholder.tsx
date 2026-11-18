@@ -1,19 +1,534 @@
-import React from "react";
-import { Sparkles } from "lucide-react";
+"use client";
+
+import React, { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import {
+  Sparkles,
+  Target,
+  CalendarPlus,
+  CheckCircle2,
+  Send,
+  Clock,
+  BookOpen,
+  Timer,
+  CalendarCheck2,
+} from "lucide-react";
+import {
+  appendAIMessageToState,
+  applySuggestedActionToState,
+  createDefaultState,
+  formatHoursAndMinutes,
+  loadAppState,
+} from "@/lib/storage/local-db";
+import {
+  analyzeStudentProgress,
+  generateMentorResponse,
+  generateSmartScheduleSuggestions,
+} from "@/modules/ai-tutor/ai-engine";
+import {
+  AIMessage,
+  AppDatabaseState,
+  SuggestedScheduleAction,
+} from "@/types/database";
+
+const QUICK_PROMPTS = [
+  "Đánh giá tiến độ & định mức học mỗi ngày của tớ",
+  "Đề xuất khung giờ học & vận động còn trống hôm nay",
+  "Tư vấn chọn Pomodoro 25/5 hay 50/15 để không bị buồn ngủ",
+];
 
 export function AIMentorPlaceholder() {
+  const [state, setState] = useState<AppDatabaseState>(() =>
+    createDefaultState()
+  );
+  const [promptInput, setPromptInput] = useState<string>("");
+  const [appliedKeys, setAppliedKeys] = useState<Record<string, boolean>>({});
+  const [statusNotice, setStatusNotice] = useState<string>("");
+  const formRef = useRef<HTMLFormElement | null>(null);
+
+  useEffect(() => {
+    setState(loadAppState());
+  }, []);
+
+  const syncWithServer = (nextState: AppDatabaseState) => {
+    setState(nextState);
+    if (typeof window !== "undefined" && typeof window.fetch === "function") {
+      window
+        .fetch("/api/state", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextState),
+        })
+        .catch(() => {});
+    }
+  };
+
+  const analysis = analyzeStudentProgress(state);
+  const smartSuggestions = generateSmartScheduleSuggestions(state);
+
+  const getActionKey = (action: SuggestedScheduleAction) =>
+    `${action.date}-${action.startTime}-${action.title}`;
+
+  const isActionAlreadyInSchedule = (action: SuggestedScheduleAction) => {
+    const key = getActionKey(action);
+    if (appliedKeys[key]) return true;
+    return state.scheduleEvents.some(
+      (evt) =>
+        evt.date === action.date &&
+        evt.startTime === action.startTime &&
+        evt.title === action.title
+    );
+  };
+
+  const handleApplySuggestion = (action: SuggestedScheduleAction) => {
+    if (isActionAlreadyInSchedule(action)) return;
+    const next = applySuggestedActionToState(state, action);
+    syncWithServer(next);
+    const key = getActionKey(action);
+    setAppliedKeys((prev) => ({ ...prev, [key]: true }));
+    setStatusNotice(
+      `Đã thêm "${action.title}" (${action.startTime} - ${action.endTime}) vào Lịch trình!`
+    );
+  };
+
+  const handleSendPrompt = (rawText: string) => {
+    const trimmed = rawText.trim();
+    if (!trimmed) return;
+
+    const userMsg: AIMessage = {
+      id: `msg-user-${Date.now()}`,
+      role: "user",
+      content: trimmed,
+      createdAt: new Date().toISOString(),
+    };
+
+    const withUser = appendAIMessageToState(state, userMsg);
+    const aiReply = generateMentorResponse(withUser, trimmed);
+    const withReply = appendAIMessageToState(withUser, aiReply);
+
+    syncWithServer(withReply);
+    setPromptInput("");
+  };
+
+  const handleSubmitForm = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    handleSendPrompt(promptInput);
+  };
+
+  const handleTextareaKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>
+  ) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      // Đảm bảo an toàn với bộ gõ tiếng Việt (IME composition)
+      if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        return;
+      }
+      if (formRef.current) {
+        formRef.current.requestSubmit();
+      } else {
+        handleSendPrompt(promptInput);
+      }
+    }
+  };
+
   return (
-    <div className="p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-3">
-      <div className="flex items-center gap-2.5 text-edtech-primary">
-        <Sparkles className="w-6 h-6" aria-hidden={true} />
-        <h1 className="text-xl font-bold text-edtech-text">
-          Cố vấn Học tập AI Mentor
-        </h1>
+    <div className="space-y-8">
+      {/* Header */}
+      <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
+            Giai đoạn 3 • Cố vấn Học tập &amp; Đề xuất Lịch trình
+          </span>
+          <h1 className="mt-2 text-2xl md:text-3xl font-bold text-edtech-text">
+            Cố vấn Học tập AI Mentor
+          </h1>
+          <p className="mt-1 text-sm text-edtech-muted">
+            Phân tích quỹ thời gian còn lại của từng mục tiêu, tính định mức
+            Pomodoro mỗi ngày và đề xuất khung giờ học tự động không trùng lịch.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2.5 shrink-0">
+          <Link
+            href="/calendar"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-edtech-surface hover:bg-slate-100 text-edtech-text text-sm font-semibold border border-edtech-border transition-colors"
+          >
+            <CalendarCheck2
+              className="w-4 h-4 text-edtech-primary"
+              aria-hidden={true}
+            />
+            <span>Xem Lịch trình ({state.scheduleEvents.length})</span>
+          </Link>
+          <Link
+            href="/pomodoro"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-edtech-primary hover:bg-edtech-primaryHover text-white text-sm font-semibold shadow-sm transition-colors"
+          >
+            <Timer className="w-4 h-4" aria-hidden={true} />
+            <span>Bắt đầu Pomodoro</span>
+          </Link>
+        </div>
+      </header>
+
+      {statusNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-semibold text-edtech-success flex items-center justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden={true} />
+            <span>{statusNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStatusNotice("")}
+            className="text-xs underline text-edtech-muted hover:text-edtech-text"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
+
+      {/* PHẦN 1: BẢNG ĐÁNH GIÁ TIẾN ĐỘ & ĐỊNH MỨC HỌC MỖI NGÀY */}
+      <section
+        aria-labelledby="ai-diagnostic-heading"
+        className="p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Target
+              className="w-5 h-5 text-edtech-primary"
+              aria-hidden={true}
+            />
+            <h2
+              id="ai-diagnostic-heading"
+              className="text-lg font-bold text-edtech-text"
+            >
+              Phân tích Mục tiêu &amp; Định mức Pomodoro Mỗi Ngày
+            </h2>
+          </div>
+          <span className="text-xs font-semibold text-edtech-muted">
+            Điểm tập trung trung bình: {analysis.averageFocusScore}% • Đã học{" "}
+            {analysis.totalFocusMinutes} phút hôm nay
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {analysis.diagnostics.map((diag) => (
+            <div
+              key={diag.goal.id}
+              data-testid={`ai-goal-diag-${diag.goal.id}`}
+              className="p-4 rounded-xl bg-edtech-bg border border-edtech-border flex flex-col justify-between space-y-3"
+            >
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`px-2 py-0.5 rounded-md text-xs font-bold border ${
+                      diag.isOverdue
+                        ? "bg-red-50 text-edtech-danger border-red-200"
+                        : diag.isUrgent
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : "bg-blue-50 text-edtech-primary border-blue-200"
+                    }`}
+                  >
+                    {diag.daysLabel}
+                  </span>
+                  <span className="text-xs font-bold text-edtech-success">
+                    {diag.goal.progressPercent}%
+                  </span>
+                </div>
+                <h3 className="text-sm font-bold text-edtech-text">
+                  {diag.goal.title}
+                </h3>
+                <p className="text-xs text-edtech-muted">
+                  Đã tích lũy: {formatHoursAndMinutes(diag.goal.completedHours)}{" "}
+                  / {diag.goal.targetHours} giờ (Còn thiếu{" "}
+                  {formatHoursAndMinutes(diag.remainingHours)})
+                </p>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white border border-edtech-border space-y-1">
+                <p className="text-xs font-bold text-edtech-primary">
+                  Đề xuất định mức mỗi ngày:
+                </p>
+                {diag.remainingMinutes > 0 ? (
+                  <p className="text-xs text-edtech-text leading-relaxed">
+                    Cần học <strong>{diag.recommendedMinutesPerDay} phút/ngày</strong>{" "}
+                    (tương đương{" "}
+                    <strong>{diag.recommendedPomodoro25Count} phiên 25/5</strong>{" "}
+                    hoặc{" "}
+                    <strong>{diag.recommendedPomodoro50Count} phiên 50/15</strong>
+                    ).
+                  </p>
+                ) : (
+                  <p className="text-xs text-edtech-success font-semibold">
+                    Đã hoàn thành 100% mục tiêu!
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* PHẦN 2: ĐỀ XUẤT KHUNG GIỜ TRỐNG TỰ ĐỘNG & TRÒ CHUYỆN CỐ VẤN AI */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Cột Đề xuất Khung giờ Học & Vận động 1-Click */}
+        <section
+          aria-labelledby="smart-suggestions-heading"
+          className="lg:col-span-5 p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
+        >
+          <div className="flex items-center gap-2">
+            <CalendarPlus
+              className="w-5 h-5 text-edtech-primary"
+              aria-hidden={true}
+            />
+            <h2
+              id="smart-suggestions-heading"
+              className="text-lg font-bold text-edtech-text"
+            >
+              Đề xuất Khung giờ Trống Hôm nay
+            </h2>
+          </div>
+          <p className="text-xs text-edtech-muted leading-relaxed">
+            AI Mentor tự động quét lịch trình hiện tại của cậu để chọn các khung
+            giờ còn trống và ghép với mục tiêu cần ưu tiên nhất:
+          </p>
+
+          {smartSuggestions.length === 0 ? (
+            <p className="p-4 rounded-xl bg-edtech-bg border border-edtech-border text-xs text-edtech-muted">
+              Lịch hôm nay của cậu đã kín các khung giờ chuẩn. Hãy hoàn thành
+              các buổi hiện có nhé!
+            </p>
+          ) : (
+            <ul className="space-y-3">
+              {smartSuggestions.map((action) => {
+                const key = getActionKey(action);
+                const alreadyAdded = isActionAlreadyInSchedule(action);
+
+                return (
+                  <li
+                    key={key}
+                    className="p-4 rounded-xl bg-edtech-bg border border-edtech-border space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1 text-xs font-bold text-edtech-primary">
+                        <Clock className="w-3.5 h-3.5" aria-hidden={true} />
+                        <span>
+                          {action.startTime} - {action.endTime}
+                        </span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-slate-200/80 text-edtech-text">
+                        {action.type === "study"
+                          ? "Học tập"
+                          : action.type === "exercise"
+                          ? "Vận động"
+                          : "Ôn tập"}
+                      </span>
+                    </div>
+
+                    <p className="text-sm font-bold text-edtech-text">
+                      {action.title}
+                    </p>
+
+                    <button
+                      type="button"
+                      disabled={alreadyAdded}
+                      onClick={() => handleApplySuggestion(action)}
+                      className={`w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-colors ${
+                        alreadyAdded
+                          ? "bg-emerald-50 text-edtech-success border border-emerald-200 cursor-default"
+                          : "bg-edtech-primary hover:bg-edtech-primaryHover text-white shadow-sm"
+                      }`}
+                    >
+                      {alreadyAdded ? (
+                        <>
+                          <CheckCircle2
+                            className="w-4 h-4"
+                            aria-hidden={true}
+                          />
+                          <span>Đã thêm vào lịch ✓</span>
+                        </>
+                      ) : (
+                        <>
+                          <CalendarPlus
+                            className="w-4 h-4"
+                            aria-hidden={true}
+                          />
+                          <span>Áp dụng vào lịch trình</span>
+                        </>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        {/* Cột Trò chuyện với Cố vấn Học tập AI Mentor */}
+        <section
+          aria-labelledby="ai-chat-heading"
+          className="lg:col-span-7 p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm flex flex-col justify-between space-y-4"
+        >
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles
+                  className="w-5 h-5 text-edtech-primary"
+                  aria-hidden={true}
+                />
+                <h2
+                  id="ai-chat-heading"
+                  className="text-lg font-bold text-edtech-text"
+                >
+                  Trò chuyện &amp; Hỏi đáp với Thầy Cô AI
+                </h2>
+              </div>
+              <span className="text-xs text-edtech-muted">
+                Tư vấn cá nhân hóa theo dữ liệu thật
+              </span>
+            </div>
+
+            {/* Các nút câu hỏi nhanh */}
+            <div className="flex flex-wrap gap-2">
+              {QUICK_PROMPTS.map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => handleSendPrompt(q)}
+                  className="px-3 py-1.5 rounded-xl bg-blue-50/80 hover:bg-blue-100 text-edtech-primary text-xs font-semibold border border-blue-200 transition-colors text-left"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+
+            {/* Lịch sử tin nhắn */}
+            <div
+              data-testid="ai-mentor-chat-list"
+              className="space-y-3 max-h-[420px] overflow-y-auto pr-1"
+            >
+              {state.aiMessages.map((msg) => {
+                const isAssistant = msg.role === "assistant";
+                return (
+                  <div
+                    key={msg.id}
+                    className={`p-4 rounded-2xl border space-y-3 ${
+                      isAssistant
+                        ? "bg-edtech-bg border-edtech-border text-edtech-text"
+                        : "bg-blue-50/90 border-blue-200 text-edtech-text ml-6"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {isAssistant ? (
+                        <Sparkles
+                          className="w-4 h-4 text-edtech-primary"
+                          aria-hidden={true}
+                        />
+                      ) : (
+                        <BookOpen
+                          className="w-4 h-4 text-edtech-primary"
+                          aria-hidden={true}
+                        />
+                      )}
+                      <span className="text-xs font-bold text-edtech-primary">
+                        {isAssistant ? "Cố vấn AI Mentor" : "Bạn"}
+                      </span>
+                    </div>
+
+                    <p className="text-sm leading-relaxed whitespace-pre-line">
+                      {msg.content}
+                    </p>
+
+                    {isAssistant &&
+                      msg.suggestedActions &&
+                      msg.suggestedActions.length > 0 && (
+                        <div className="pt-2 border-t border-edtech-border space-y-2">
+                          <p className="text-xs font-bold text-edtech-muted">
+                            Lịch trình gợi ý đi kèm (bấm để thêm):
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {msg.suggestedActions.map((act) => {
+                              const actKey = getActionKey(act);
+                              const added = isActionAlreadyInSchedule(act);
+                              return (
+                                <button
+                                  key={actKey}
+                                  type="button"
+                                  disabled={added}
+                                  onClick={() => handleApplySuggestion(act)}
+                                  className={`p-2.5 rounded-xl border text-left text-xs transition-colors ${
+                                    added
+                                      ? "bg-emerald-50 border-emerald-200 text-edtech-success"
+                                      : "bg-white hover:bg-blue-50 border-edtech-border text-edtech-text"
+                                  }`}
+                                >
+                                  <div className="font-bold text-edtech-primary">
+                                    {act.startTime} - {act.endTime}
+                                  </div>
+                                  <div className="font-semibold truncate mt-0.5">
+                                    {act.title}
+                                  </div>
+                                  <div className="mt-1 font-bold underline">
+                                    {added
+                                      ? "Đã thêm vào lịch ✓"
+                                      : "+ Áp dụng vào lịch"}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Form nhập câu hỏi (IME-safe Enter submit) */}
+          <form
+            ref={formRef}
+            aria-labelledby="ai-chat-heading"
+            onSubmit={handleSubmitForm}
+            className="pt-3 border-t border-edtech-border space-y-2.5"
+          >
+            <div>
+              <label
+                htmlFor="ai-mentor-input"
+                className="block text-xs font-bold text-edtech-text mb-1"
+              >
+                Đặt câu hỏi hoặc yêu cầu Cố vấn AI điều chỉnh lịch trình
+              </label>
+              <textarea
+                id="ai-mentor-input"
+                name="prompt"
+                rows={2}
+                value={promptInput}
+                onChange={(e) => setPromptInput(e.target.value)}
+                onKeyDown={handleTextareaKeyDown}
+                placeholder="VD: Hôm nay tớ nên học môn nào trước? Tối nay tớ hay buồn ngủ thì chia Pomodoro thế nào? (Nhấn Enter để gửi)"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-edtech-muted">
+                Mẹo: Nhấn <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border">Enter</kbd> để gửi, <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border">Shift + Enter</kbd> để xuống dòng
+              </span>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-edtech-primary hover:bg-edtech-primaryHover text-white text-sm font-bold shadow-sm transition-colors"
+              >
+                <Send className="w-4 h-4" aria-hidden={true} />
+                <span>Gửi tới Cố vấn AI</span>
+              </button>
+            </div>
+          </form>
+        </section>
       </div>
-      <p className="text-sm text-edtech-muted leading-relaxed">
-        Phân hệ phân tích mục tiêu, đánh giá mức độ kỷ luật thực tế và gợi ý
-        khung giờ học phù hợp như thầy cô giáo đồng hành.
-      </p>
     </div>
   );
 }

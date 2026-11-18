@@ -1,4 +1,5 @@
 import {
+  AIMessage,
   AppDatabaseState,
   FocusSession,
   Goal,
@@ -7,6 +8,7 @@ import {
   ScheduleEvent,
   ScheduleEventStatus,
   ScheduleEventType,
+  SuggestedScheduleAction,
 } from "@/types/database";
 
 export const STORAGE_KEY = "edu_focus_db_v1";
@@ -357,6 +359,31 @@ export function deleteScheduleEventFromState(
   return saveAppState({
     ...state,
     scheduleEvents: state.scheduleEvents.filter((evt) => evt.id !== eventId),
+  });
+}
+
+export function appendAIMessageToState(
+  state: AppDatabaseState,
+  message: AIMessage
+): AppDatabaseState {
+  return saveAppState({
+    ...state,
+    aiMessages: [...state.aiMessages, message],
+  });
+}
+
+export function applySuggestedActionToState(
+  state: AppDatabaseState,
+  action: SuggestedScheduleAction
+): AppDatabaseState {
+  return addScheduleEventToState(state, {
+    title: action.title,
+    date: action.date,
+    startTime: action.startTime,
+    endTime: action.endTime,
+    type: action.type,
+    goalId: action.goalId,
+    notes: "Được đề xuất bởi Cố vấn AI Mentor",
   });
 }
 

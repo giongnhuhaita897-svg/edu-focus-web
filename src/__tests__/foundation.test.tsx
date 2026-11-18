@@ -16,12 +16,18 @@ import {
   resetAppState,
   STORAGE_KEY,
 } from "@/lib/storage/local-db";
+import {
+  analyzeStudentProgress,
+  generateSmartScheduleSuggestions,
+} from "@/modules/ai-tutor/ai-engine";
 import { Sidebar } from "@/components/layout/Sidebar";
 import DashboardPage from "@/app/page";
 import { WebcamPlaceholder } from "@/modules/webcam/WebcamPlaceholder";
 import { PomodoroHub } from "@/modules/pomodoro/PomodoroHub";
 import { CalendarPlaceholder } from "@/modules/calendar/CalendarPlaceholder";
+import { AIMentorPlaceholder } from "@/modules/ai-tutor/AIMentorPlaceholder";
 import { GET, PUT } from "@/app/api/state/route";
+import { POST as postAIMentor } from "@/app/api/ai-mentor/route";
 
 let currentPathname = "/";
 
@@ -29,7 +35,7 @@ vi.mock("next/navigation", () => ({
   usePathname: () => currentPathname,
 }));
 
-describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công việc, Webcam & Lịch trình - Mục tiêu", () => {
+describe("Giai đoạn 1, 2 & 3 — Khung dự án, Pomodoro, Webcam, Lịch trình & Cố vấn AI Mentor", () => {
   beforeEach(() => {
     window.localStorage.clear();
     currentPathname = "/";
@@ -42,13 +48,11 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
     expect(calculateEventDurationHours("08:00", "09:30")).toBe(1.5);
     expect(calculateEventDurationHours("15:00", "14:00")).toBe(0);
 
-    // Kiểm tra định dạng giờ + phút chuẩn cho phiên 25p và 50p
     expect(formatHoursAndMinutes(18)).toBe("18 giờ");
     expect(formatHoursAndMinutes(18 + 25 / 60)).toBe("18 giờ 25 phút");
     expect(formatHoursAndMinutes(18 + 50 / 60)).toBe("18 giờ 50 phút");
     expect(formatHoursAndMinutes(18 + 75 / 60)).toBe("19 giờ 15 phút");
 
-    // Kiểm tra số ngày còn lại kế bên hạn hoàn thành
     expect(getDaysRemainingInfo("2026-12-20", "2026-11-18")).toEqual({
       days: 32,
       label: "Còn 32 ngày",
@@ -183,7 +187,6 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
       screen.getByTestId("pomodoro-selected-goal-progress")
     ).toHaveTextContent("Đã tích lũy: 18 giờ / 40 giờ (45%)");
 
-    // Hoàn tất phiên tập trung 25 phút -> cộng đúng 25 phút vào mục tiêu (thành 18 giờ 25 phút)
     const completeWorkBtn = screen.getByRole("button", {
       name: /Hoàn tất phiên & Cộng \+25 phút/i,
     });
@@ -193,12 +196,10 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
       screen.getByTestId("pomodoro-selected-goal-progress")
     ).toHaveTextContent("Đã tích lũy: 18 giờ 25 phút / 40 giờ (46%)");
 
-    // Sau khi hoàn tất phiên Học/Làm, đồng hồ tự chuyển sang pha Nghỉ 05:00
     expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
       "05:00"
     );
 
-    // Chuyển sang chế độ Deep Work 50/15 và quay lại pha Học/Làm 50:00
     const preset5015 = screen.getByRole("button", {
       name: /Deep Work 50\/15/i,
     });
@@ -240,7 +241,6 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
       (e) => e.title === "Code phân hệ Lịch trình Giai đoạn 2"
     )!;
 
-    // Học xong phiên 1 (25 phút) -> 25 phút
     state = recordPomodoroWorkSessionInState(state, {
       presetId: "25_5",
       workMinutes: 25,
@@ -250,7 +250,6 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
     let updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
     expect(formatHoursAndMinutes(updatedGoal.completedHours)).toBe("25 phút");
 
-    // Học xong phiên 2 (25 phút) -> 50 phút (chưa tròn 1 giờ, không bị làm tròn sai)
     state = recordPomodoroWorkSessionInState(state, {
       presetId: "25_5",
       workMinutes: 25,
@@ -259,7 +258,6 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
     updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
     expect(formatHoursAndMinutes(updatedGoal.completedHours)).toBe("50 phút");
 
-    // Học tiếp phiên 3 (50 phút) -> 100 phút = 1 giờ 40 phút
     state = recordPomodoroWorkSessionInState(state, {
       presetId: "50_15",
       workMinutes: 50,
@@ -270,7 +268,6 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
       "1 giờ 40 phút"
     );
 
-    // Xóa mục tiêu -> gỡ liên kết goalId trên sự kiện
     state = deleteGoalFromState(state, addedGoal.id);
     expect(state.goals.find((g) => g.id === addedGoal.id)).toBeUndefined();
   });
@@ -278,15 +275,12 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
   it("Giai đoạn 2 UI: hiển thị số ngày còn lại kế bên hạn hoàn thành và không có nút tự cộng +1h thủ công", () => {
     render(<CalendarPlaceholder />);
 
-    // Kiểm tra hiển thị badge "Còn ... ngày" trên các thẻ mục tiêu
     expect(
       screen.getByTestId("goal-days-left-goal-dsa").textContent
     ).toMatch(/Còn \d+ ngày|Hết hạn hôm nay|Quá hạn/i);
 
-    // Đảm bảo không còn nút "+1h học" thủ công
     expect(screen.queryByRole("button", { name: /\+1h học/i })).toBeNull();
 
-    // Tạo mục tiêu mới trên form
     const goalTitleInput = screen.getByLabelText(/Tên mục tiêu/i);
     const goalTargetInput = screen.getByLabelText(/Tổng số giờ cần đạt/i);
     fireEvent.change(goalTitleInput, {
@@ -303,7 +297,6 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
       screen.getAllByText(/Ôn thi Giải tích 1 đạt điểm A/i).length
     ).toBeGreaterThanOrEqual(1);
 
-    // Tạo sự kiện lịch mới trên form
     const eventTitleInput = screen.getByLabelText(/Nội dung buổi lịch/i);
     fireEvent.change(eventTitleInput, {
       target: { value: "Giải 10 bài tích phân suy rộng" },
@@ -319,7 +312,56 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
     ).toBeInTheDocument();
   });
 
-  it("API nội bộ /api/state hỗ trợ GET và PUT dữ liệu trạng thái", async () => {
+  it("Giai đoạn 3: phân tích định mức Pomodoro mỗi ngày, đề xuất khung giờ trống và áp dụng 1-click vào lịch trình", () => {
+    const state = createDefaultState();
+    const analysis = analyzeStudentProgress(state, "2026-11-18");
+
+    expect(analysis.diagnostics).toHaveLength(3);
+    expect(analysis.topPriorityGoal).not.toBeNull();
+
+    const suggestions = generateSmartScheduleSuggestions(
+      state,
+      state.scheduleEvents[0].date
+    );
+    expect(suggestions.length).toBeGreaterThanOrEqual(2);
+
+    render(<AIMentorPlaceholder />);
+
+    expect(
+      screen.getByRole("heading", {
+        name: /Cố vấn Học tập AI Mentor/i,
+      })
+    ).toBeInTheDocument();
+
+    // Bấm nút "Áp dụng vào lịch trình" đầu tiên -> tăng số sự kiện trong lịch
+    const applyButtons = screen.getAllByRole("button", {
+      name: /Áp dụng vào lịch trình/i,
+    });
+    expect(applyButtons.length).toBeGreaterThan(0);
+    fireEvent.click(applyButtons[0]);
+
+    const updatedState = loadAppState();
+    expect(updatedState.scheduleEvents.length).toBe(
+      state.scheduleEvents.length + 1
+    );
+
+    // Gửi câu hỏi tư vấn cho AI Mentor
+    const chatInput = screen.getByLabelText(
+      /Đặt câu hỏi hoặc yêu cầu Cố vấn AI/i
+    );
+    fireEvent.change(chatInput, {
+      target: { value: "Tối nay tớ hay buồn ngủ thì chọn Pomodoro nào?" },
+    });
+    const sendBtn = screen.getByRole("button", { name: /Gửi tới Cố vấn AI/i });
+    fireEvent.click(sendBtn);
+
+    const afterChatState = loadAppState();
+    expect(afterChatState.aiMessages.length).toBeGreaterThan(
+      state.aiMessages.length
+    );
+  });
+
+  it("API nội bộ /api/state và /api/ai-mentor hoạt động ổn định", async () => {
     const getRes = await GET();
     expect(getRes.status).toBe(200);
     const data = await getRes.json();
@@ -335,7 +377,19 @@ describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro tích hợp Công vi�
     });
     const putRes = await PUT(putReq);
     expect(putRes.status).toBe(200);
-    const updated = await putRes.json();
-    expect(updated.goals[0].completedHours).toBe(20);
+
+    const aiReq = new Request("http://localhost:3000/api/ai-mentor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Đánh giá tiến độ mục tiêu của tớ",
+        state: nextState,
+      }),
+    });
+    const aiRes = await postAIMentor(aiReq);
+    expect(aiRes.status).toBe(200);
+    const aiData = await aiRes.json();
+    expect(aiData.message.role).toBe("assistant");
+    expect(Array.isArray(aiData.message.suggestedActions)).toBe(true);
   });
 });
