@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --edtech-bg: #F8FAFC;
+  --edtech-surface: #FFFFFF;
+  --edtech-text: #1E293B;
+  --edtech-muted: #64748B;
+  --edtech-primary: #2563EB;
+  --edtech-success: #10B981;
+  --edtech-border: #E2E8F0;
+}
+
+body {
+  background-color: var(--edtech-bg);
+  color: var(--edtech-text);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
