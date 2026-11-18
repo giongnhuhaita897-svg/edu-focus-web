@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   CalendarCheck2,
+  Timer,
   Camera,
   Sparkles,
   GraduationCap,
@@ -31,6 +32,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Lịch trình & Mục tiêu",
     description: "Quản lý thời gian biểu",
     icon: CalendarCheck2,
+  },
+  {
+    href: "/pomodoro",
+    label: "Đồng hồ Pomodoro",
+    description: "Chu kỳ Học/Làm & Nghỉ 25/5, 50/15",
+    icon: Timer,
   },
   {
     href: "/webcam",

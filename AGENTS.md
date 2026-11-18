@@ -1,6 +1,21 @@
-# Quy định làm việc bắt buộc (AGENTS.md)
+# Quy tắc vận hành bắt buộc cho AI Agent (AGENTS.md)
 
-Bắt buộc phải tuân thủ 2 quy định sau đây trong suốt quá trình phát triển dự án:
+## 1. Quy trình Tự Kiểm Thử (Self-Testing Rules)
 
-1. **Commit sau mỗi thay đổi:** Sau mỗi lần thay đổi đều phải tạo một commit git tương ứng để sau này còn theo dõi và khôi phục.
-2. **Viết test và kiểm tra đạt trước khi giao:** Sau mỗi lần thay đổi đều phải viết hoặc cập nhật các bài test liên quan và trước khi giao cho người dùng phải đảm bảo các bài test và nghiệm thu đều đạt.
+- **TUYỆT ĐỐI KHÔNG** chạy lệnh `npm run dev` hoặc `pnpm dev` trong quá trình tự kiểm tra vì sẽ làm treo tiến trình (blocking process) và chiếm dụng cổng 3000.
+- Để kiểm tra code có chạy đúng không trước khi bàn giao, bắt buộc sử dụng:
+  1. `npx tsc --noEmit` (Kiểm tra lỗi kiểu dữ liệu TypeScript).
+  2. `npm run lint` (Kiểm tra lỗi cú pháp và quy chuẩn code).
+- **Giới hạn sửa lỗi:** Nếu kiểm thử thất bại quá 2 lần liên tiếp cho cùng một vấn đề, hãy DỪNG LẠI và báo cáo nguyên nhân cho người dùng, không tự ý cài thêm thư viện lạ để vá lỗi.
+
+## 2. Quy trình Tự Lưu Code (Safe Git Commit Rules)
+
+- Chỉ thực hiện `git commit` KHI VÀ CHỈ KHI bước kiểm thử (`tsc --noEmit`) không có bất kỳ lỗi đỏ nào.
+- Trước khi commit, luôn chạy `git status` để kiểm tra.
+- **TUYỆT ĐỐI KHÔNG** commit các file chứa khóa bảo mật (`.env`, `.env.local`), thư mục `node_modules/`, `.next/` hoặc các file cấu hình tạm.
+- Nội dung commit (Commit message) phải viết rõ ràng theo chuẩn: `feat: [tên tính năng]` hoặc `fix: [lỗi đã sửa]` để cả nhóm dễ theo dõi.
+
+## 3. Quy chuẩn Thiết kế & Cấu trúc (EdTech Standards)
+
+- Giao diện giữ phong cách Giáo dục Phổ thông chuyên nghiệp: nền sáng dịu (`#F8FAFC`), chữ tương phản cao dễ đọc (`#1E293B`), điểm nhấn màu xanh học thuật (`#2563EB`) và xanh lá kỷ luật (`#10B981`).
+- Phân tách rõ ràng từng khu vực tính năng trong thư mục riêng biệt để tránh xung đột code (Merge Conflict) khi làm việc nhóm.

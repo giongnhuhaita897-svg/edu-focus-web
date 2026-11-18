@@ -38,15 +38,28 @@ export type ExerciseType = "overhead_reach" | "squat" | "shoulder_stretch";
 
 export type FocusSessionMode = "study_focus" | "exercise_break";
 
+export type PomodoroPresetId = "25_5" | "50_15";
+export type PomodoroPhase = "work" | "break";
+
+export interface PomodoroPreset {
+  id: PomodoroPresetId;
+  label: string;
+  workMinutes: number;
+  breakMinutes: number;
+  description: string;
+}
+
 export interface FocusSession {
   id: string;
   scheduleEventId?: string;
   mode: FocusSessionMode;
+  pomodoroPreset?: PomodoroPresetId;
   startedAt: string; // ISO string
   endedAt: string; // ISO string
   durationMinutes: number;
   focusScorePercent: number; // 0 - 100
   distractionCount: number;
+  drowsinessAlertCount?: number;
   exerciseType?: ExerciseType;
   completedReps?: number;
   targetReps?: number;

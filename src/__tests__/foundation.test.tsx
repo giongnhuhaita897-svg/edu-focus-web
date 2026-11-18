@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   calculateGoalProgress,
@@ -11,6 +11,8 @@ import {
 } from "@/lib/storage/local-db";
 import { Sidebar } from "@/components/layout/Sidebar";
 import DashboardPage from "@/app/page";
+import { WebcamPlaceholder } from "@/modules/webcam/WebcamPlaceholder";
+import { PomodoroHub } from "@/modules/pomodoro/PomodoroHub";
 import { GET, PUT } from "@/app/api/state/route";
 
 let currentPathname = "/";
@@ -65,8 +67,8 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
     expect(reset.goals).toHaveLength(initial.goals.length);
   });
 
-  it("hiển thị thanh điều hướng Sidebar với đủ 4 phân hệ và đánh dấu aria-current='page'", () => {
-    currentPathname = "/webcam";
+  it("hiển thị thanh điều hướng Sidebar gồm cả mục Đồng hồ Pomodoro và Phòng Kỷ luật", () => {
+    currentPathname = "/pomodoro";
     render(<Sidebar />);
 
     const nav = screen.getByRole("navigation", { name: "Điều hướng chính" });
@@ -76,12 +78,16 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
     const calendarLink = screen.getByRole("link", {
       name: /Lịch trình & Mục tiêu/i,
     });
+    const pomodoroLink = screen.getByRole("link", {
+      name: /Đồng hồ Pomodoro/i,
+    });
     const webcamLink = screen.getByRole("link", { name: /Phòng Kỷ luật/i });
     const aiLink = screen.getByRole("link", { name: /Cố vấn AI/i });
 
     expect(overviewLink).not.toHaveAttribute("aria-current");
     expect(calendarLink).not.toHaveAttribute("aria-current");
-    expect(webcamLink).toHaveAttribute("aria-current", "page");
+    expect(pomodoroLink).toHaveAttribute("aria-current", "page");
+    expect(webcamLink).not.toHaveAttribute("aria-current");
     expect(aiLink).not.toHaveAttribute("aria-current");
   });
 
@@ -103,6 +109,67 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
     expect(
       screen.getByText(/Lời khuyên từ Cố vấn AI Mentor/i)
     ).toBeInTheDocument();
+  });
+
+  it("Phòng Kỷ luật Webcam chia rõ 2 mục: Giám sát Ngồi học (mất tập trung/ngủ) & Giám sát Tập thể dục kèm tích hợp Pomodoro", () => {
+    render(<WebcamPlaceholder />);
+
+    const studyTab = screen.getByRole("tab", {
+      name: /1\. Giám sát Ngồi học & Tập trung/i,
+    });
+    const exerciseTab = screen.getByRole("tab", {
+      name: /2\. Giám sát Tập thể dục & Đếm nhịp/i,
+    });
+
+    expect(studyTab).toHaveAttribute("aria-selected", "true");
+    expect(exerciseTab).toHaveAttribute("aria-selected", "false");
+
+    expect(
+      screen.getByText(/Phát hiện Đang ngủ \/ Gục đầu/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Tích hợp Chu kỳ Pomodoro/i)).toBeInTheDocument();
+
+    // Chuyển sang mục 2: Giám sát Tập thể dục
+    fireEvent.click(exerciseTab);
+    expect(exerciseTab).toHaveAttribute("aria-selected", "true");
+    expect(studyTab).toHaveAttribute("aria-selected", "false");
+    expect(
+      screen.getByText(/Khung Giám sát Vận động & Đếm nhịp Chuẩn xác/i)
+    ).toBeInTheDocument();
+  });
+
+  it("Mục riêng Đồng hồ Pomodoro hỗ trợ chu kỳ 25/5 và 50/15 theo cấu trúc Học/Làm và Nghỉ", () => {
+    render(<PomodoroHub />);
+
+    expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
+      "25:00"
+    );
+
+    // Chuyển sang pha Nghỉ của 25/5 -> 05:00
+    const breakBtn = screen.getByRole("button", {
+      name: /Pha Nghỉ giải lao \(5 phút\)/i,
+    });
+    fireEvent.click(breakBtn);
+    expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
+      "05:00"
+    );
+
+    // Chuyển sang chế độ Deep Work 50/15 -> ở pha Nghỉ sẽ hiển thị 15:00, pha Học/Làm hiển thị 50:00
+    const preset5015 = screen.getByRole("button", {
+      name: /Deep Work 50\/15/i,
+    });
+    fireEvent.click(preset5015);
+    expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
+      "15:00"
+    );
+
+    const workBtn = screen.getByRole("button", {
+      name: /Pha Học \/ Làm việc \(50 phút\)/i,
+    });
+    fireEvent.click(workBtn);
+    expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
+      "50:00"
+    );
   });
 
   it("API nội bộ /api/state hỗ trợ GET và PUT dữ liệu trạng thái", async () => {
