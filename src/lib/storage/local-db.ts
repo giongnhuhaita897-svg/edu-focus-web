@@ -1,11 +1,245 @@
-import { AppDatabaseState, Goal } from "@/types/database";
+import {
+  AppDatabaseState,
+  Goal,
+  GoalCategory,
+  ScheduleEvent,
+  ScheduleEventStatus,
+  ScheduleEventType,
+} from "@/types/database";
 
 export const STORAGE_KEY = "edu_focus_db_v1";
 
-export function calculateGoalProgress(completedHours: number, targetHours: number): number {
+export function calculateGoalProgress(
+  completedHours: number,
+  targetHours: number
+): number {
   if (targetHours <= 0) return 0;
   const raw = Math.round((completedHours / targetHours) * 100);
   return Math.max(0, Math.min(100, raw));
+}
+
+export function calculateEventDurationHours(
+  startTime: string,
+  endTime: string
+): number {
+  const [startH, startM] = startTime.split(":").map(Number);
+  const [endH, endM] = endTime.split(":").map(Number);
+  if (
+    Number.isNaN(startH) ||
+    Number.isNaN(startM) ||
+    Number.isNaN(endH) ||
+    Number.isNaN(endM)
+  ) {
+    return 0;
+  }
+  const diffMinutes = endH * 60 + endM - (startH * 60 + startM);
+  if (diffMinutes <= 0) return 0;
+  return Math.round((diffMinutes / 60) * 10) / 10;
+}
+
+export interface CreateGoalInput {
+  title: string;
+  description?: string;
+  category: GoalCategory;
+  targetHours: number;
+  completedHours?: number;
+  deadline: string;
+}
+
+export function addGoalToState(
+  state: AppDatabaseState,
+  input: CreateGoalInput
+): AppDatabaseState {
+  const targetHours = Math.max(1, Number(input.targetHours) || 1);
+  const completedHours = Math.max(0, Number(input.completedHours) || 0);
+  const progressPercent = calculateGoalProgress(completedHours, targetHours);
+
+  const newGoal: Goal = {
+    id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: input.title.trim(),
+    description: (input.description ?? "").trim(),
+    category: input.category,
+    targetHours,
+    completedHours,
+    deadline: input.deadline,
+    progressPercent,
+    status: progressPercent >= 100 ? "completed" : "active",
+  };
+
+  return saveAppState({
+    ...state,
+    goals: [newGoal, ...state.goals],
+  });
+}
+
+export function updateGoalInState(
+  state: AppDatabaseState,
+  goalId: string,
+  updates: Partial<
+    Pick<
+      Goal,
+      | "title"
+      | "description"
+      | "category"
+      | "targetHours"
+      | "completedHours"
+      | "deadline"
+      | "status"
+    >
+  >
+): AppDatabaseState {
+  const nextGoals = state.goals.map((goal) => {
+    if (goal.id !== goalId) return goal;
+    const targetHours = Math.max(
+      1,
+      updates.targetHours !== undefined ? updates.targetHours : goal.targetHours
+    );
+    const completedHours = Math.max(
+      0,
+      Math.round(
+        (updates.completedHours !== undefined
+          ? updates.completedHours
+          : goal.completedHours) * 10
+      ) / 10
+    );
+    const progressPercent = calculateGoalProgress(completedHours, targetHours);
+    const status =
+      updates.status ?? (progressPercent >= 100 ? "completed" : "active");
+
+    return {
+      ...goal,
+      ...updates,
+      targetHours,
+      completedHours,
+      progressPercent,
+      status,
+    };
+  });
+
+  return saveAppState({
+    ...state,
+    goals: nextGoals,
+  });
+}
+
+export function deleteGoalFromState(
+  state: AppDatabaseState,
+  goalId: string
+): AppDatabaseState {
+  const nextGoals = state.goals.filter((g) => g.id !== goalId);
+  const nextEvents = state.scheduleEvents.map((evt) =>
+    evt.goalId === goalId ? { ...evt, goalId: undefined } : evt
+  );
+
+  return saveAppState({
+    ...state,
+    goals: nextGoals,
+    scheduleEvents: nextEvents,
+  });
+}
+
+export interface CreateScheduleEventInput {
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  type: ScheduleEventType;
+  goalId?: string;
+  notes?: string;
+}
+
+export function addScheduleEventToState(
+  state: AppDatabaseState,
+  input: CreateScheduleEventInput
+): AppDatabaseState {
+  const newEvent: ScheduleEvent = {
+    id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: input.title.trim(),
+    date: input.date,
+    startTime: input.startTime,
+    endTime: input.endTime,
+    type: input.type,
+    goalId: input.goalId || undefined,
+    status: "planned",
+    notes: input.notes?.trim() || undefined,
+  };
+
+  const sortedEvents = [...state.scheduleEvents, newEvent].sort((a, b) => {
+    const dateCompare = a.date.localeCompare(b.date);
+    if (dateCompare !== 0) return dateCompare;
+    return a.startTime.localeCompare(b.startTime);
+  });
+
+  return saveAppState({
+    ...state,
+    scheduleEvents: sortedEvents,
+  });
+}
+
+export function updateScheduleEventStatusInState(
+  state: AppDatabaseState,
+  eventId: string,
+  nextStatus: ScheduleEventStatus
+): AppDatabaseState {
+  const targetEvent = state.scheduleEvents.find((e) => e.id === eventId);
+  if (!targetEvent || targetEvent.status === nextStatus) {
+    return state;
+  }
+
+  const durationHours = calculateEventDurationHours(
+    targetEvent.startTime,
+    targetEvent.endTime
+  );
+  let hourDelta = 0;
+  if (targetEvent.status !== "completed" && nextStatus === "completed") {
+    hourDelta = durationHours;
+  } else if (targetEvent.status === "completed" && nextStatus !== "completed") {
+    hourDelta = -durationHours;
+  }
+
+  const nextEvents = state.scheduleEvents.map((evt) =>
+    evt.id === eventId ? { ...evt, status: nextStatus } : evt
+  );
+
+  const nextGoals =
+    targetEvent.goalId && hourDelta !== 0
+      ? state.goals.map((goal) => {
+          if (goal.id !== targetEvent.goalId) return goal;
+          const completedHours = Math.max(
+            0,
+            Math.round((goal.completedHours + hourDelta) * 10) / 10
+          );
+          const progressPercent = calculateGoalProgress(
+            completedHours,
+            goal.targetHours
+          );
+          return {
+            ...goal,
+            completedHours,
+            progressPercent,
+            status:
+              progressPercent >= 100
+                ? ("completed" as const)
+                : ("active" as const),
+          };
+        })
+      : state.goals;
+
+  return saveAppState({
+    ...state,
+    goals: nextGoals,
+    scheduleEvents: nextEvents,
+  });
+}
+
+export function deleteScheduleEventFromState(
+  state: AppDatabaseState,
+  eventId: string
+): AppDatabaseState {
+  return saveAppState({
+    ...state,
+    scheduleEvents: state.scheduleEvents.filter((evt) => evt.id !== eventId),
+  });
 }
 
 export function createDefaultState(): AppDatabaseState {
@@ -15,7 +249,8 @@ export function createDefaultState(): AppDatabaseState {
     {
       id: "goal-dsa",
       title: "Hoàn thành môn Cấu trúc dữ liệu & Giải thuật (Điểm A)",
-      description: "Ôn chắc Cây nhị phân, Đồ thị và Quy hoạch động kèm giải 40 bài thực hành.",
+      description:
+        "Ôn chắc Cây nhị phân, Đồ thị và Quy hoạch động kèm giải 40 bài thực hành.",
       category: "academic",
       targetHours: 40,
       completedHours: 18,
@@ -26,7 +261,8 @@ export function createDefaultState(): AppDatabaseState {
     {
       id: "goal-ielts",
       title: "Luyện nghe & đọc IELTS đạt band 7.0",
-      description: "Duy trì 45 phút luyện đề mỗi sáng và ghi chú từ vựng học thuật.",
+      description:
+        "Duy trì 45 phút luyện đề mỗi sáng và ghi chú từ vựng học thuật.",
       category: "skill",
       targetHours: 60,
       completedHours: 36,
@@ -37,7 +273,8 @@ export function createDefaultState(): AppDatabaseState {
     {
       id: "goal-posture",
       title: "Vận động giải lao giữa giờ học mỗi ngày",
-      description: "Thực hiện bài tập Giơ tay qua đầu và Giãn cơ vai với Webcam sau mỗi ca Pomodoro.",
+      description:
+        "Thực hiện bài tập Giơ tay qua đầu và Giãn cơ vai với Webcam sau mỗi ca Pomodoro.",
       category: "health",
       targetHours: 15,
       completedHours: 12,

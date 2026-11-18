@@ -2,17 +2,23 @@ import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
+  addGoalToState,
+  addScheduleEventToState,
+  calculateEventDurationHours,
   calculateGoalProgress,
   createDefaultState,
+  deleteGoalFromState,
   loadAppState,
   saveAppState,
   resetAppState,
   STORAGE_KEY,
+  updateScheduleEventStatusInState,
 } from "@/lib/storage/local-db";
 import { Sidebar } from "@/components/layout/Sidebar";
 import DashboardPage from "@/app/page";
 import { WebcamPlaceholder } from "@/modules/webcam/WebcamPlaceholder";
 import { PomodoroHub } from "@/modules/pomodoro/PomodoroHub";
+import { CalendarPlaceholder } from "@/modules/calendar/CalendarPlaceholder";
 import { GET, PUT } from "@/app/api/state/route";
 
 let currentPathname = "/";
@@ -21,16 +27,18 @@ vi.mock("next/navigation", () => ({
   usePathname: () => currentPathname,
 }));
 
-describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu trữ cục bộ", () => {
+describe("Giai đoạn 1 & 2 — Khung dự án, Pomodoro, Webcam & Hệ thống Lịch trình - Mục tiêu", () => {
   beforeEach(() => {
     window.localStorage.clear();
     currentPathname = "/";
   });
 
-  it("tính toán phần trăm tiến độ mục tiêu chính xác và giới hạn trong [0, 100]", () => {
+  it("tính toán phần trăm tiến độ mục tiêu và thời lượng sự kiện chính xác", () => {
     expect(calculateGoalProgress(18, 40)).toBe(45);
     expect(calculateGoalProgress(50, 40)).toBe(100);
     expect(calculateGoalProgress(10, 0)).toBe(0);
+    expect(calculateEventDurationHours("08:00", "09:30")).toBe(1.5);
+    expect(calculateEventDurationHours("15:00", "14:00")).toBe(0);
   });
 
   it("khởi tạo, lưu và đọc dữ liệu từ localStorage chuẩn xác", () => {
@@ -129,7 +137,6 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
     ).toBeInTheDocument();
     expect(screen.getByText(/Tích hợp Chu kỳ Pomodoro/i)).toBeInTheDocument();
 
-    // Chuyển sang mục 2: Giám sát Tập thể dục
     fireEvent.click(exerciseTab);
     expect(exerciseTab).toHaveAttribute("aria-selected", "true");
     expect(studyTab).toHaveAttribute("aria-selected", "false");
@@ -145,7 +152,6 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
       "25:00"
     );
 
-    // Chuyển sang pha Nghỉ của 25/5 -> 05:00
     const breakBtn = screen.getByRole("button", {
       name: /Pha Nghỉ giải lao \(5 phút\)/i,
     });
@@ -154,7 +160,6 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
       "05:00"
     );
 
-    // Chuyển sang chế độ Deep Work 50/15 -> ở pha Nghỉ sẽ hiển thị 15:00, pha Học/Làm hiển thị 50:00
     const preset5015 = screen.getByRole("button", {
       name: /Deep Work 50\/15/i,
     });
@@ -170,6 +175,90 @@ describe("Giai đoạn 1 — Khung dự án, Giao diện Clean EdTech & Lưu tr�
     expect(screen.getByTestId("pomodoro-timer-display")).toHaveTextContent(
       "50:00"
     );
+  });
+
+  it("Giai đoạn 2: cho phép thêm/xóa mục tiêu, thêm sự kiện lịch và tự động cộng giờ khi hoàn thành buổi lịch", () => {
+    let state = createDefaultState();
+
+    // 1. Thêm mục tiêu mới
+    state = addGoalToState(state, {
+      title: "Hoàn thành Đồ án Web Giáo dục",
+      category: "academic",
+      targetHours: 20,
+      completedHours: 2,
+      deadline: "2026-12-25",
+    });
+    const addedGoal = state.goals[0];
+    expect(addedGoal.title).toBe("Hoàn thành Đồ án Web Giáo dục");
+    expect(addedGoal.progressPercent).toBe(10);
+
+    // 2. Thêm buổi lịch 2 giờ gắn với mục tiêu mới
+    state = addScheduleEventToState(state, {
+      title: "Code phân hệ Lịch trình Giai đoạn 2",
+      date: "2026-11-18",
+      startTime: "14:00",
+      endTime: "16:00",
+      type: "study",
+      goalId: addedGoal.id,
+    });
+    const addedEvt = state.scheduleEvents.find(
+      (e) => e.title === "Code phân hệ Lịch trình Giai đoạn 2"
+    );
+    expect(addedEvt).toBeDefined();
+
+    // 3. Đánh dấu hoàn thành buổi lịch -> tự động cộng 2 giờ vào mục tiêu (2 + 2 = 4h -> 20%)
+    state = updateScheduleEventStatusInState(
+      state,
+      addedEvt!.id,
+      "completed"
+    );
+    const updatedGoal = state.goals.find((g) => g.id === addedGoal.id)!;
+    expect(updatedGoal.completedHours).toBe(4);
+    expect(updatedGoal.progressPercent).toBe(20);
+
+    // 4. Xóa mục tiêu -> gỡ liên kết goalId trên sự kiện mà không làm mất sự kiện
+    state = deleteGoalFromState(state, addedGoal.id);
+    expect(state.goals.find((g) => g.id === addedGoal.id)).toBeUndefined();
+    const unlinkedEvt = state.scheduleEvents.find(
+      (e) => e.id === addedEvt!.id
+    );
+    expect(unlinkedEvt?.goalId).toBeUndefined();
+  });
+
+  it("Giai đoạn 2 UI: tạo mục tiêu mới và tạo buổi lịch mới ngay trên giao diện CalendarPlaceholder", () => {
+    render(<CalendarPlaceholder />);
+
+    // Tạo mục tiêu mới trên form
+    const goalTitleInput = screen.getByLabelText(/Tên mục tiêu/i);
+    const goalTargetInput = screen.getByLabelText(/Tổng số giờ cần đạt/i);
+    fireEvent.change(goalTitleInput, {
+      target: { value: "Ôn thi Giải tích 1 đạt điểm A" },
+    });
+    fireEvent.change(goalTargetInput, { target: { value: "25" } });
+
+    const saveGoalBtn = screen.getByRole("button", {
+      name: /Lưu mục tiêu mới/i,
+    });
+    fireEvent.click(saveGoalBtn);
+
+    expect(
+      screen.getAllByText(/Ôn thi Giải tích 1 đạt điểm A/i).length
+    ).toBeGreaterThanOrEqual(1);
+
+    // Tạo sự kiện lịch mới trên form
+    const eventTitleInput = screen.getByLabelText(/Nội dung buổi lịch/i);
+    fireEvent.change(eventTitleInput, {
+      target: { value: "Giải 10 bài tích phân suy rộng" },
+    });
+
+    const addEventBtn = screen.getByRole("button", {
+      name: /Thêm vào lịch trình/i,
+    });
+    fireEvent.click(addEventBtn);
+
+    expect(
+      screen.getByRole("heading", { name: /Giải 10 bài tích phân suy rộng/i })
+    ).toBeInTheDocument();
   });
 
   it("API nội bộ /api/state hỗ trợ GET và PUT dữ liệu trạng thái", async () => {
