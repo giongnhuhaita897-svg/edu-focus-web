@@ -60,6 +60,8 @@ export interface FocusSession {
   focusScorePercent: number; // 0 - 100
   distractionCount: number;
   drowsinessAlertCount?: number;
+  penalized?: boolean;
+  penaltyReason?: string;
   exerciseType?: ExerciseType;
   completedReps?: number;
   targetReps?: number;
