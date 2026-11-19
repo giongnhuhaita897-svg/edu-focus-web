@@ -3,6 +3,8 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   FACE_LANDMARKER_ASSETS,
+  HAND_LANDMARKER_ASSETS,
+  OBJECT_DETECTOR_ASSETS,
   STUDY_FOCUS_THRESHOLDS,
 } from "@/modules/webcam/thresholds";
 import {
@@ -10,6 +12,11 @@ import {
   NormalizedLandmarkPoint,
   StudyFocusTracker,
 } from "@/modules/webcam/study-tracker";
+import {
+  extractDistractionDevices,
+  HandLandmarkPoint,
+  HandScrollDetector,
+} from "@/modules/webcam/distraction-detectors";
 import {
   isBenignMediaPipeStderr,
   pickPreferredCameraDeviceId,
@@ -255,5 +262,155 @@ describe("Webcam AI — Tab Giám sát Ngồi học & Tập trung (FaceLandmarke
 
     expect(pickPreferredCameraDeviceId(devices)).toBe("cam-laptop");
     expect(pickPreferredCameraDeviceId(devices, "cam-phone")).toBe("cam-phone");
+  });
+
+  it("nhận diện chính xác Điện thoại và iPad/Màn hình phụ (bỏ qua TV nhỏ xa và sách vở)", () => {
+    expect(OBJECT_DETECTOR_ASSETS.localModelPath).toBe(
+      "/models/efficientdet_lite0.tflite"
+    );
+    expect(HAND_LANDMARKER_ASSETS.localModelPath).toBe(
+      "/models/hand_landmarker.task"
+    );
+
+    const detected = extractDistractionDevices(
+      {
+        detections: [
+          {
+            categories: [{ categoryName: "cell phone", score: 0.72 }],
+            boundingBox: { originX: 120, originY: 140, width: 90, height: 150 },
+          },
+          {
+            categories: [{ categoryName: "tv", score: 0.65 }],
+            // iPad/màn hình phụ lớn trước mặt (~10% diện tích 640x360)
+            boundingBox: { originX: 200, originY: 120, width: 160, height: 150 },
+          },
+          {
+            categories: [{ categoryName: "tv", score: 0.65 }],
+            // TV nhỏ xa tít phía sau (~0.5% diện tích) -> phải bỏ qua
+            boundingBox: { originX: 10, originY: 10, width: 40, height: 30 },
+          },
+          {
+            categories: [{ categoryName: "book", score: 0.9 }],
+            boundingBox: { originX: 100, originY: 200, width: 180, height: 120 },
+          },
+        ],
+      },
+      640,
+      360
+    );
+
+    expect(detected).toHaveLength(2);
+    expect(detected[0].kind).toBe("phone");
+    expect(detected[0].label).toBe("Điện thoại");
+    expect(detected[1].kind).toBe("tablet_screen");
+    expect(detected[1].label).toBe("iPad / Màn hình phụ");
+  });
+
+  it("nhận diện cử chỉ tay lướt lặp lại và không báo nhầm khi chống cằm hoặc đưa cả cánh tay", () => {
+    const createHand = (
+      wristX: number,
+      wristY: number,
+      thumbDy: number
+    ): HandLandmarkPoint[] => {
+      const pts: HandLandmarkPoint[] = Array.from({ length: 21 }, () => ({
+        x: wristX,
+        y: wristY,
+      }));
+      pts[0] = { x: wristX, y: wristY };
+      pts[4] = { x: wristX + 0.03, y: wristY - 0.1 + thumbDy };
+      pts[8] = { x: wristX + 0.06, y: wristY - 0.14 };
+      return pts;
+    };
+
+    // 1. Giả lập vuốt ngón cái lên xuống lặp lại -> phát hiện đang lướt
+    const scrollDetector = new HandScrollDetector(STUDY_FOCUS_THRESHOLDS);
+    const pattern = [0, -0.04, 0.01, -0.045, 0.01, -0.04];
+    let lastSnap = scrollDetector.processHands([createHand(0.5, 0.7, 0)], 0);
+    pattern.forEach((dy, idx) => {
+      lastSnap = scrollDetector.processHands(
+        [createHand(0.5, 0.7, dy)],
+        (idx + 1) * 200
+      );
+    });
+    expect(lastSnap.hasHands).toBe(true);
+    expect(lastSnap.isScrolling).toBe(true);
+    expect(lastSnap.dominantAxis).toBe("vertical");
+
+    // 2. Giả lập tay đứng yên chống cằm -> không báo lướt
+    const stillDetector = new HandScrollDetector(STUDY_FOCUS_THRESHOLDS);
+    let stillSnap = stillDetector.processHands([createHand(0.5, 0.5, 0)], 0);
+    for (let i = 1; i <= 5; i++) {
+      stillSnap = stillDetector.processHands(
+        [createHand(0.5, 0.5, 0.004 * (i % 2))],
+        i * 200
+      );
+    }
+    expect(stillSnap.isScrolling).toBe(false);
+  });
+
+  it("cảnh báo khi cầm điện thoại/lướt tay và hỗ trợ Chế độ Ghi chép vở không nhắc nhầm khi cúi viết bài", () => {
+    const tracker = new StudyFocusTracker(STUDY_FOCUS_THRESHOLDS);
+    const straightFace = {
+      hasFace: true,
+      eyeClosureScore: 0.1,
+      eyeLookDownScore: 0.1,
+      yawDeg: 0,
+      pitchDeg: 0,
+      rollDeg: 0,
+    };
+    const fakePhone = {
+      kind: "phone" as const,
+      label: "Điện thoại",
+      rawCategory: "cell phone",
+      score: 0.82,
+      boundingBox: { originX: 100, originY: 120, width: 80, height: 140 },
+    };
+
+    // Xem giờ lướt qua 1s -> chưa phạt
+    tracker.processFrame(straightFace, 0, { detectedDevices: [fakePhone] });
+    let snap = tracker.processFrame(straightFace, 1000, {
+      detectedDevices: [fakePhone],
+    });
+    expect(snap.status).toBe("focused");
+    expect(snap.deviceDistractionCount).toBe(0);
+
+    // Giữ điện thoại quá 2.2s -> báo phone_distracted
+    tracker.processFrame(straightFace, 1800, { detectedDevices: [fakePhone] });
+    snap = tracker.processFrame(straightFace, 2600, {
+      detectedDevices: [fakePhone],
+    });
+    expect(snap.status).toBe("phone_distracted");
+    expect(snap.deviceDistractionCount).toBe(1);
+    expect(snap.justTriggeredAlert).toBe("phone_distracted");
+
+    // Chế độ Ghi chép vở: cúi nhẹ viết bài (pitch 18 độ, nhìn xuống 0.75) vẫn giữ trạng thái focused
+    const writingFace = {
+      hasFace: true,
+      eyeClosureScore: 0.15,
+      eyeLookDownScore: 0.75,
+      yawDeg: 4,
+      pitchDeg: 18,
+      rollDeg: 0,
+    };
+    for (let t = 4000; t <= 9000; t += 1000) {
+      snap = tracker.processFrame(writingFace, t, {
+        detectedDevices: [],
+        isHandScrolling: false,
+        noteTakingMode: true,
+      });
+    }
+    expect(snap.status).toBe("focused");
+
+    // Kiểm tra 2 nút bật/tắt mới trên giao diện WebcamPlaceholder
+    render(<WebcamPlaceholder />);
+    const deviceToggle = screen.getByTestId("toggle-device-hand-detection");
+    const noteToggle = screen.getByTestId("toggle-note-taking-mode");
+    expect(deviceToggle).toHaveAttribute("aria-pressed", "true");
+    expect(noteToggle).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(noteToggle);
+    expect(noteToggle).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(deviceToggle);
+    expect(deviceToggle).toHaveAttribute("aria-pressed", "false");
   });
 });

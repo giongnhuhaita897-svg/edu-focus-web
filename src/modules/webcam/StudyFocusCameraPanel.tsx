@@ -1,7 +1,11 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { FaceLandmarker } from "@mediapipe/tasks-vision";
+import type {
+  FaceLandmarker,
+  HandLandmarker,
+  ObjectDetector,
+} from "@mediapipe/tasks-vision";
 import {
   Camera,
   CameraOff,
@@ -11,7 +15,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Timer,
-  Sparkles,
   Play,
   Pause,
   RotateCcw,
@@ -20,6 +23,9 @@ import {
   Save,
   Loader2,
   Dumbbell,
+  Smartphone,
+  Hand,
+  NotebookPen,
 } from "lucide-react";
 import {
   AppDatabaseState,
@@ -37,8 +43,14 @@ import {
   StudyTrackerSnapshot,
 } from "@/modules/webcam/study-tracker";
 import {
+  DetectedDistractionDevice,
+  extractDistractionDevices,
+  HandLandmarkPoint,
+  HandScrollDetector,
+} from "@/modules/webcam/distraction-detectors";
+import {
   CameraDeviceOption,
-  createStudyFaceLandmarker,
+  createStudyVisionBundle,
   ModelLoadSource,
   pickPreferredCameraDeviceId,
   PREFERRED_CAMERA_STORAGE_KEY,
@@ -89,9 +101,19 @@ export function StudyFocusCameraPanel({
     CameraDeviceOption[]
   >([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>("");
+  const [enableDeviceAndHandDetection, setEnableDeviceAndHandDetection] =
+    useState<boolean>(true);
+  const [noteTakingMode, setNoteTakingMode] = useState<boolean>(false);
+  const [visionCapabilities, setVisionCapabilities] = useState<{
+    objectDetectorReady: boolean;
+    handLandmarkerReady: boolean;
+  }>({ objectDetectorReady: false, handLandmarkerReady: false });
 
   const trackerRef = useRef<StudyFocusTracker>(
     new StudyFocusTracker(STUDY_FOCUS_THRESHOLDS)
+  );
+  const handScrollDetectorRef = useRef<HandScrollDetector>(
+    new HandScrollDetector(STUDY_FOCUS_THRESHOLDS)
   );
   const [snapshot, setSnapshot] = useState<StudyTrackerSnapshot>(() =>
     trackerRef.current.getSnapshot()
@@ -101,14 +123,25 @@ export function StudyFocusCameraPanel({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
+  const objectDetectorRef = useRef<ObjectDetector | null>(null);
+  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastDetectTimeRef = useRef<number>(0);
-  const lastVideoTimestampRef = useRef<number>(0);
+  const lastObjectDetectTimeRef = useRef<number>(0);
+  const lastHandDetectTimeRef = useRef<number>(0);
+  const lastFaceTimestampRef = useRef<number>(0);
+  const lastObjectTimestampRef = useRef<number>(0);
+  const lastHandTimestampRef = useRef<number>(0);
+  const latestDevicesRef = useRef<DetectedDistractionDevice[]>([]);
+  const latestHandsRef = useRef<HandLandmarkPoint[][]>([]);
+  const latestHandScrollingRef = useRef<boolean>(false);
   const hasDrawnCanvasRef = useRef<boolean>(false);
 
   // Refs đồng bộ state mới nhất cho vòng lặp requestAnimationFrame
   const privacyModeRef = useRef<CameraPrivacyMode>(privacyMode);
   const soundEnabledRef = useRef<boolean>(soundEnabled);
+  const enableDeviceAndHandRef = useRef<boolean>(enableDeviceAndHandDetection);
+  const noteTakingModeRef = useRef<boolean>(noteTakingMode);
   const dbStateRef = useRef<AppDatabaseState>(dbState);
   const selectedGoalIdRef = useRef<string>(selectedGoalId);
   const selectedPresetRef = useRef<PomodoroPresetId>(selectedPreset);
@@ -120,6 +153,20 @@ export function StudyFocusCameraPanel({
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
+
+  useEffect(() => {
+    enableDeviceAndHandRef.current = enableDeviceAndHandDetection;
+    if (!enableDeviceAndHandDetection) {
+      latestDevicesRef.current = [];
+      latestHandsRef.current = [];
+      latestHandScrollingRef.current = false;
+      handScrollDetectorRef.current.reset();
+    }
+  }, [enableDeviceAndHandDetection]);
+
+  useEffect(() => {
+    noteTakingModeRef.current = noteTakingMode;
+  }, [noteTakingMode]);
 
   useEffect(() => {
     dbStateRef.current = dbState;
@@ -208,17 +255,19 @@ export function StudyFocusCameraPanel({
     refreshCameraDevices();
   }, [refreshCameraDevices]);
 
-  // Dọn dẹp camera và mô hình khi rời trang
+  // Dọn dẹp camera và các mô hình AI khi rời trang
   useEffect(() => {
     return () => {
       stopCameraResources();
-      if (landmarkerRef.current) {
-        try {
-          landmarkerRef.current.close();
-        } catch {
-          // Bỏ qua lỗi khi giải phóng WASM
+      for (const ref of [landmarkerRef, objectDetectorRef, handLandmarkerRef]) {
+        if (ref.current) {
+          try {
+            ref.current.close();
+          } catch {
+            // Bỏ qua lỗi khi giải phóng WASM
+          }
+          ref.current = null;
         }
-        landmarkerRef.current = null;
       }
     };
   }, [stopCameraResources]);
@@ -320,22 +369,84 @@ export function StudyFocusCameraPanel({
           canvas.height = video.videoHeight;
         }
 
-        // MediaPipe VIDEO mode yêu cầu timestamp tăng dần nghiêm ngặt
-        const safeTimestampMs = Math.max(
+        // 1. Quét Điện thoại / iPad theo chu kỳ nhẹ (450ms)
+        if (
+          enableDeviceAndHandRef.current &&
+          objectDetectorRef.current &&
+          nowMs - lastObjectDetectTimeRef.current >=
+            STUDY_FOCUS_THRESHOLDS.objectDetectionIntervalMs
+        ) {
+          lastObjectDetectTimeRef.current = nowMs;
+          const objTs = Math.max(
+            Math.round(nowMs),
+            lastObjectTimestampRef.current + 1
+          );
+          lastObjectTimestampRef.current = objTs;
+          try {
+            const objResult = runWithFilteredMediaPipeLogs(() =>
+              objectDetectorRef.current!.detectForVideo(video, objTs)
+            );
+            latestDevicesRef.current = extractDistractionDevices(
+              objResult,
+              video.videoWidth,
+              video.videoHeight,
+              STUDY_FOCUS_THRESHOLDS
+            );
+          } catch {
+            // Bỏ qua lỗi khung hình tạm thời của ObjectDetector
+          }
+        }
+
+        // 2. Quét cử động tay lướt điện thoại / iPad theo chu kỳ 160ms
+        if (
+          enableDeviceAndHandRef.current &&
+          handLandmarkerRef.current &&
+          nowMs - lastHandDetectTimeRef.current >=
+            STUDY_FOCUS_THRESHOLDS.handDetectionIntervalMs
+        ) {
+          lastHandDetectTimeRef.current = nowMs;
+          const handTs = Math.max(
+            Math.round(nowMs),
+            lastHandTimestampRef.current + 1
+          );
+          lastHandTimestampRef.current = handTs;
+          try {
+            const handResult = runWithFilteredMediaPipeLogs(() =>
+              handLandmarkerRef.current!.detectForVideo(video, handTs)
+            );
+            const hands = handResult.landmarks ?? [];
+            latestHandsRef.current = hands;
+            const scrollSnap = handScrollDetectorRef.current.processHands(
+              hands,
+              nowMs
+            );
+            latestHandScrollingRef.current = scrollSnap.isScrolling;
+          } catch {
+            // Bỏ qua lỗi khung hình tạm thời của HandLandmarker
+          }
+        }
+
+        // 3. Phân tích khuôn mặt (hướng đầu, nhắm mắt, nhìn xuống)
+        const faceTs = Math.max(
           Math.round(nowMs),
-          lastVideoTimestampRef.current + 1
+          lastFaceTimestampRef.current + 1
         );
-        lastVideoTimestampRef.current = safeTimestampMs;
+        lastFaceTimestampRef.current = faceTs;
 
         try {
           const result = runWithFilteredMediaPipeLogs(() =>
-            landmarker.detectForVideo(video, safeTimestampMs)
+            landmarker.detectForVideo(video, faceTs)
           );
           const metrics = extractFaceFrameMetrics(
             result,
             STUDY_FOCUS_THRESHOLDS
           );
-          const nextSnap = trackerRef.current.processFrame(metrics, nowMs);
+          const nextSnap = trackerRef.current.processFrame(metrics, nowMs, {
+            detectedDevices: latestDevicesRef.current,
+            isHandScrolling: latestHandScrollingRef.current,
+            noteTakingMode: noteTakingModeRef.current,
+            enableDeviceAndHandDetection: enableDeviceAndHandRef.current,
+          });
           setSnapshot(nextSnap);
 
           hasDrawnCanvasRef.current = true;
@@ -343,7 +454,16 @@ export function StudyFocusCameraPanel({
             canvas,
             result.faceLandmarks?.[0],
             nextSnap.status,
-            privacyModeRef.current
+            privacyModeRef.current,
+            {
+              detectedDevices: enableDeviceAndHandRef.current
+                ? latestDevicesRef.current
+                : [],
+              hands: enableDeviceAndHandRef.current
+                ? latestHandsRef.current
+                : [],
+              isHandScrolling: latestHandScrollingRef.current,
+            }
           );
 
           if (nextSnap.justTriggeredAlert !== "none") {
@@ -351,9 +471,19 @@ export function StudyFocusCameraPanel({
               setLiveAlertText(
                 "Phát hiện dấu hiệu buồn ngủ / gục đầu! Hãy ngồi thẳng lưng hoặc vươn vai nhẹ nhé."
               );
+            } else if (nextSnap.justTriggeredAlert === "phone_distracted") {
+              const detectedLabel =
+                nextSnap.activeDevices[0]?.label ?? "Điện thoại / iPad";
+              setLiveAlertText(
+                `Phát hiện ${detectedLabel} trong khung hình! Hãy cất thiết bị sang một bên để giữ mạch tập trung nhé.`
+              );
+            } else if (nextSnap.justTriggeredAlert === "scrolling_distracted") {
+              setLiveAlertText(
+                "Phát hiện cử chỉ tay đang lướt liên tục! Hãy tạm gác màn hình phụ để hoàn thành phiên Pomodoro này nhé."
+              );
             } else if (nextSnap.justTriggeredAlert === "distracted") {
               setLiveAlertText(
-                "Bạn đang quay mặt khỏi bàn học. Hãy đưa ánh mắt trở lại bài học nhé!"
+                "Bạn đang quay mặt hoặc nhìn xuống khá lâu. Nếu đang viết vở, hãy bật nút 'Đang ghi chép vở' để tránh nhắc nhầm nhé!"
               );
             } else if (nextSnap.justTriggeredAlert === "absent") {
               setLiveAlertText(
@@ -465,11 +595,17 @@ export function StudyFocusCameraPanel({
         await videoRef.current.play().catch(() => {});
       }
 
-      // 2. Nạp MediaPipe FaceLandmarker (ưu tiên public/models/ -> fallback CDN)
+      // 2. Nạp bộ 3 mô hình MediaPipe (Face + Object ĐT/iPad + Hand lướt tay)
       if (!landmarkerRef.current) {
-        const loaded = await createStudyFaceLandmarker();
-        landmarkerRef.current = loaded.landmarker;
-        setModelSource(loaded.source);
+        const bundle = await createStudyVisionBundle();
+        landmarkerRef.current = bundle.faceLandmarker;
+        objectDetectorRef.current = bundle.objectDetector;
+        handLandmarkerRef.current = bundle.handLandmarker;
+        setModelSource(bundle.source);
+        setVisionCapabilities({
+          objectDetectorReady: Boolean(bundle.objectDetector),
+          handLandmarkerReady: Boolean(bundle.handLandmarker),
+        });
       }
 
       if (secondsLeft === 0) {
@@ -478,6 +614,12 @@ export function StudyFocusCameraPanel({
       setIsCameraActive(true);
       setIsTimerRunning(true);
       lastDetectTimeRef.current = 0;
+      lastObjectDetectTimeRef.current = 0;
+      lastHandDetectTimeRef.current = 0;
+      latestDevicesRef.current = [];
+      latestHandsRef.current = [];
+      latestHandScrollingRef.current = false;
+      handScrollDetectorRef.current.reset();
       runDetectionLoop();
     } catch (err) {
       stopCameraResources();
@@ -522,6 +664,10 @@ export function StudyFocusCameraPanel({
     setIsTimerRunning(false);
     stopCameraResources();
     trackerRef.current.reset();
+    handScrollDetectorRef.current.reset();
+    latestDevicesRef.current = [];
+    latestHandsRef.current = [];
+    latestHandScrollingRef.current = false;
     setSnapshot(trackerRef.current.getSnapshot());
     setSecondsLeft(currentPreset.workMinutes * 60);
     setPomodoroJustFinished(false);
@@ -550,9 +696,12 @@ export function StudyFocusCameraPanel({
   };
 
   const statusColorClass =
-    snapshot.status === "drowsy" || snapshot.status === "absent"
+    snapshot.status === "drowsy" ||
+    snapshot.status === "absent" ||
+    snapshot.status === "phone_distracted"
       ? "text-red-400"
-      : snapshot.status === "distracted"
+      : snapshot.status === "distracted" ||
+        snapshot.status === "scrolling_distracted"
       ? "text-amber-300"
       : "text-emerald-400";
 
@@ -664,12 +813,32 @@ export function StudyFocusCameraPanel({
                 : "Hiển thị Camera trực tiếp"}
             </span>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               {modelSource && (
                 <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-900/85 text-slate-300 border border-slate-700">
                   {modelSource === "local" ? "Model cục bộ ✓" : "CDN dự phòng"}
                 </span>
               )}
+              {isCameraActive &&
+                enableDeviceAndHandDetection &&
+                (visionCapabilities.objectDetectorReady ||
+                  visionCapabilities.handLandmarkerReady) && (
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border ${
+                      snapshot.activeDevices.length > 0
+                        ? "bg-red-950/90 text-red-200 border-red-400/60"
+                        : snapshot.isHandScrolling
+                        ? "bg-amber-950/90 text-amber-200 border-amber-400/60"
+                        : "bg-slate-900/85 text-sky-300 border-slate-700"
+                    }`}
+                  >
+                    {snapshot.activeDevices.length > 0
+                      ? `Phát hiện: ${snapshot.activeDevices[0].label}`
+                      : snapshot.isHandScrolling
+                      ? "Phát hiện: Đang lướt tay"
+                      : "Quét ĐT/iPad & Tay: Bật"}
+                  </span>
+                )}
               <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-900/85 text-blue-300 border border-slate-700">
                 Chu kỳ: {currentPreset.label}
               </span>
@@ -693,12 +862,13 @@ export function StudyFocusCameraPanel({
                 )}
                 <p className="text-base font-bold">
                   {isLoadingModel
-                    ? "Đang khởi động Camera & nạp FaceLandmarker..."
+                    ? "Đang khởi động Camera & nạp 3 mô hình AI..."
                     : "Khu vực hiển thị Webcam Giám sát Học tập"}
                 </p>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  Hệ thống xử lý 100% tại trình duyệt: theo dõi hướng nhìn, phát
-                  hiện quay đi mất tập trung hoặc nhắm mắt / gục đầu ngủ gật.
+                  Xử lý 100% tại trình duyệt: nhận diện hướng nhìn, buồn ngủ /
+                  gục đầu, điện thoại / iPad trong khung hình và cử chỉ tay đang
+                  lướt liên tục.
                 </p>
               </>
             ) : liveAlertText ? (
@@ -830,40 +1000,85 @@ export function StudyFocusCameraPanel({
           </button>
         </div>
 
+        {/* Tùy chọn thông minh phù hợp thực tế khi ngồi học */}
+        <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl bg-edtech-bg border border-edtech-border">
+          <button
+            type="button"
+            data-testid="toggle-device-hand-detection"
+            onClick={() => setEnableDeviceAndHandDetection((prev) => !prev)}
+            aria-pressed={enableDeviceAndHandDetection}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+              enableDeviceAndHandDetection
+                ? "bg-blue-50 text-edtech-primary border-blue-200"
+                : "bg-white text-edtech-muted border-edtech-border hover:text-edtech-text"
+            }`}
+          >
+            <Smartphone className="w-3.5 h-3.5" aria-hidden={true} />
+            <span>
+              Quét ĐT / iPad &amp; Lướt tay:{" "}
+              {enableDeviceAndHandDetection ? "Bật" : "Tắt"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="toggle-note-taking-mode"
+            onClick={() => setNoteTakingMode((prev) => !prev)}
+            aria-pressed={noteTakingMode}
+            title="Bật khi bạn đang cúi xuống ghi chép vở hoặc đọc sách giấy để tránh nhắc nhầm"
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+              noteTakingMode
+                ? "bg-emerald-50 text-edtech-success border-emerald-200"
+                : "bg-white text-edtech-muted border-edtech-border hover:text-edtech-text"
+            }`}
+          >
+            <NotebookPen className="w-3.5 h-3.5" aria-hidden={true} />
+            <span>
+              Đang ghi chép vở: {noteTakingMode ? "Đang bật" : "Tắt"}
+            </span>
+          </button>
+
+          <span className="text-[11px] text-edtech-muted ml-auto">
+            {noteTakingMode
+              ? "Đang nới góc cúi đầu viết vở (vẫn bắt ĐT/iPad & ngủ gật)"
+              : "Bật 'Ghi chép vở' nếu bạn làm bài trên giấy để học thoải mái hơn"}
+          </span>
+        </div>
+
         {/* 3 tiêu chí giám sát thông minh khi ngồi học */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
           <div className="p-4 rounded-xl bg-edtech-bg border border-edtech-border space-y-1.5">
             <div className="flex items-center gap-2 text-xs font-bold text-edtech-primary">
-              <Eye className="w-4 h-4" aria-hidden={true} />
-              <span>Phát hiện Mất tập trung</span>
+              <Smartphone className="w-4 h-4" aria-hidden={true} />
+              <span>Nhận diện ĐT / iPad</span>
             </div>
             <p className="text-xs text-edtech-muted leading-relaxed">
-              Ghi nhận khi quay mặt quá {STUDY_FOCUS_THRESHOLDS.headYawDistractionDeg}°
-              trên {STUDY_FOCUS_THRESHOLDS.distractionDurationMs / 1000}s hoặc rời khỏi
-              bàn học quá {STUDY_FOCUS_THRESHOLDS.absenceDurationMs / 1000}s.
+              Quét điện thoại &amp; màn hình phụ/iPad (EfficientDet) sau độ trễ
+              nhẹ {STUDY_FOCUS_THRESHOLDS.deviceDistractionDurationMs / 1000}s để
+              tránh nhắc nhầm khi chỉ xem giờ.
             </p>
           </div>
 
           <div className="p-4 rounded-xl bg-edtech-bg border border-edtech-border space-y-1.5">
             <div className="flex items-center gap-2 text-xs font-bold text-amber-600">
-              <Moon className="w-4 h-4" aria-hidden={true} />
-              <span>Phát hiện Đang ngủ / Gục đầu</span>
+              <Hand className="w-4 h-4" aria-hidden={true} />
+              <span>Cử chỉ Lướt tay &amp; Mất tập trung</span>
             </div>
             <p className="text-xs text-edtech-muted leading-relaxed">
-              Theo dõi độ nhắm mắt (Blendshapes/EAR) và góc cúi đầu quá{" "}
-              {STUDY_FOCUS_THRESHOLDS.headPitchDownThresholdDeg}° liên tục{" "}
-              {(STUDY_FOCUS_THRESHOLDS.drowsyDurationMs / 1000).toFixed(1)}s.
+              Phát hiện ngón cái/ngón trỏ vuốt lặp lại (HandLandmarker) và quay
+              mặt quá {STUDY_FOCUS_THRESHOLDS.headYawDistractionDeg}°, không bắt
+              nhầm khi lật trang sách hay uống nước.
             </p>
           </div>
 
           <div className="p-4 rounded-xl bg-edtech-bg border border-edtech-border space-y-1.5">
             <div className="flex items-center gap-2 text-xs font-bold text-edtech-success">
-              <Sparkles className="w-4 h-4" aria-hidden={true} />
-              <span>Tổng hợp Điểm Kỷ luật</span>
+              <Moon className="w-4 h-4" aria-hidden={true} />
+              <span>Độ Tỉnh táo &amp; Điểm Kỷ luật</span>
             </div>
             <p className="text-xs text-edtech-muted leading-relaxed">
-              Tự động lưu <code>FocusSession</code> vào hồ sơ khi kết thúc phiên
-              Pomodoro để Cố vấn AI đánh giá.
+              Nhận diện nhắm mắt / gục đầu ngủ gật và tự động lưu{" "}
+              <code>FocusSession</code> khi hoàn tất chu kỳ Pomodoro.
             </p>
           </div>
         </div>

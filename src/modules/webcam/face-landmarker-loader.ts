@@ -1,10 +1,26 @@
-import type { FaceLandmarker } from "@mediapipe/tasks-vision";
-import { FACE_LANDMARKER_ASSETS } from "@/modules/webcam/thresholds";
+import type {
+  FaceLandmarker,
+  HandLandmarker,
+  ObjectDetector,
+} from "@mediapipe/tasks-vision";
+import {
+  FACE_LANDMARKER_ASSETS,
+  HAND_LANDMARKER_ASSETS,
+  OBJECT_DETECTOR_ASSETS,
+  STUDY_FOCUS_THRESHOLDS,
+} from "@/modules/webcam/thresholds";
 
 export type ModelLoadSource = "local" | "cdn";
 
 export interface LoadedFaceLandmarker {
   landmarker: FaceLandmarker;
+  source: ModelLoadSource;
+}
+
+export interface LoadedStudyVisionModels {
+  faceLandmarker: FaceLandmarker;
+  objectDetector: ObjectDetector | null;
+  handLandmarker: HandLandmarker | null;
   source: ModelLoadSource;
 }
 
@@ -22,7 +38,7 @@ const PHYSICAL_LAPTOP_CAMERA_PATTERN =
   /(integrated|built-?in|facetime|hd\s*webcam|hd\s*camera|usb|logitech|realtek|chicony|sunplus|hp\s*truevision|lenovo|dell|asus|acer)/i;
 
 /**
- * Nhận diện các dòng log INFO vô hại do MediaPipe/TFLite WASM đẩy ra stderr
+ * Nhận diện các dòng log INFO/WARNING vô hại do MediaPipe/TFLite WASM đẩy ra stderr
  * (bị Next.js Dev Overlay hiểu nhầm thành lỗi đỏ khi đi qua console.error).
  */
 export function isBenignMediaPipeStderr(args: unknown[]): boolean {
@@ -32,7 +48,7 @@ export function isBenignMediaPipeStderr(args: unknown[]): boolean {
   return (
     /^\s*INFO:\s*Created TensorFlow Lite XNNPACK delegate/i.test(text) ||
     /^\s*INFO:\s*Replacing \d+ node/i.test(text) ||
-    /^\s*W\d{4}\s+.*(landmark_projection_calculator|feedback_manager|gl_context)/i.test(
+    /^\s*W\d{4}\s+.*(landmark_projection_calculator|feedback_manager|gl_context|inference_feedback|palm_detection|ssd_anchors)/i.test(
       text
     )
   );
@@ -92,7 +108,6 @@ export function pickPreferredCameraDeviceId(
     return savedDeviceId;
   }
 
-  // 1. Ưu tiên webcam laptop/USB vật lý rõ ràng
   const laptopCam = validDevices.find(
     (d) =>
       PHYSICAL_LAPTOP_CAMERA_PATTERN.test(d.label) &&
@@ -100,7 +115,6 @@ export function pickPreferredCameraDeviceId(
   );
   if (laptopCam) return laptopCam.deviceId;
 
-  // 2. Nếu không khớp tên quen thuộc, chọn thiết bị đầu tiên KHÔNG phải camera ảo/điện thoại
   const nonVirtualCam = validDevices.find(
     (d) => d.label && !VIRTUAL_OR_PHONE_CAMERA_PATTERN.test(d.label)
   );
@@ -121,6 +135,15 @@ async function isLocalAssetAvailable(url: string): Promise<boolean> {
   }
 }
 
+async function resolveWasmRoot(): Promise<string> {
+  const hasLocalWasm = await isLocalAssetAvailable(
+    `${FACE_LANDMARKER_ASSETS.localWasmRoot}/vision_wasm_internal.js`
+  );
+  return hasLocalWasm
+    ? FACE_LANDMARKER_ASSETS.localWasmRoot
+    : FACE_LANDMARKER_ASSETS.cdnWasmRoot;
+}
+
 /**
  * Khởi tạo MediaPipe FaceLandmarker với cơ chế ưu tiên file cục bộ (public/models/)
  * và tự động dự phòng sang CDN nếu thiếu tệp cục bộ hoặc lỗi GPU.
@@ -128,16 +151,11 @@ async function isLocalAssetAvailable(url: string): Promise<boolean> {
 export async function createStudyFaceLandmarker(): Promise<LoadedFaceLandmarker> {
   const vision = await import("@mediapipe/tasks-vision");
 
-  const hasLocalModel = await isLocalAssetAvailable(
-    FACE_LANDMARKER_ASSETS.localModelPath
-  );
-  const hasLocalWasm = await isLocalAssetAvailable(
-    `${FACE_LANDMARKER_ASSETS.localWasmRoot}/vision_wasm_internal.js`
-  );
+  const [hasLocalModel, wasmRoot] = await Promise.all([
+    isLocalAssetAvailable(FACE_LANDMARKER_ASSETS.localModelPath),
+    resolveWasmRoot(),
+  ]);
 
-  const wasmRoot = hasLocalWasm
-    ? FACE_LANDMARKER_ASSETS.localWasmRoot
-    : FACE_LANDMARKER_ASSETS.cdnWasmRoot;
   const modelPath = hasLocalModel
     ? FACE_LANDMARKER_ASSETS.localModelPath
     : FACE_LANDMARKER_ASSETS.cdnModelPath;
@@ -165,7 +183,6 @@ export async function createStudyFaceLandmarker(): Promise<LoadedFaceLandmarker>
     });
   };
 
-  // Thử GPU trước để mượt 30fps, fallback CPU nếu trình duyệt/laptop không hỗ trợ WebGL2 tốt
   try {
     const landmarker = await createWithPaths(wasmRoot, modelPath, "GPU");
     return { landmarker, source };
@@ -174,7 +191,6 @@ export async function createStudyFaceLandmarker(): Promise<LoadedFaceLandmarker>
       const landmarker = await createWithPaths(wasmRoot, modelPath, "CPU");
       return { landmarker, source };
     } catch {
-      // Fallback cuối cùng sang CDN nếu tệp nội bộ gặp sự cố
       const landmarker = await createWithPaths(
         FACE_LANDMARKER_ASSETS.cdnWasmRoot,
         FACE_LANDMARKER_ASSETS.cdnModelPath,
@@ -183,4 +199,137 @@ export async function createStudyFaceLandmarker(): Promise<LoadedFaceLandmarker>
       return { landmarker, source: "cdn" };
     }
   }
+}
+
+/**
+ * Khởi tạo ObjectDetector (EfficientDet-Lite0) nhận diện điện thoại & iPad/màn hình phụ.
+ * Trả về null an toàn nếu thiết bị yếu không nạp được (không làm ảnh hưởng FaceLandmarker).
+ */
+export async function createStudyObjectDetector(): Promise<ObjectDetector | null> {
+  try {
+    const vision = await import("@mediapipe/tasks-vision");
+    const [hasLocalModel, wasmRoot] = await Promise.all([
+      isLocalAssetAvailable(OBJECT_DETECTOR_ASSETS.localModelPath),
+      resolveWasmRoot(),
+    ]);
+    const modelPath = hasLocalModel
+      ? OBJECT_DETECTOR_ASSETS.localModelPath
+      : OBJECT_DETECTOR_ASSETS.cdnModelPath;
+
+    const createWithPaths = async (
+      resolvedWasmRoot: string,
+      resolvedModelPath: string,
+      delegate: "GPU" | "CPU"
+    ): Promise<ObjectDetector> => {
+      return runAsyncWithFilteredMediaPipeLogs(async () => {
+        const filesetResolver = await vision.FilesetResolver.forVisionTasks(
+          resolvedWasmRoot
+        );
+        return vision.ObjectDetector.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: resolvedModelPath,
+            delegate,
+          },
+          runningMode: "VIDEO",
+          scoreThreshold: Math.min(
+            STUDY_FOCUS_THRESHOLDS.phoneConfidenceThreshold,
+            STUDY_FOCUS_THRESHOLDS.tabletScreenConfidenceThreshold
+          ),
+          maxResults: 5,
+          categoryAllowlist: ["cell phone", "tv", "laptop"],
+        });
+      });
+    };
+
+    try {
+      return await createWithPaths(wasmRoot, modelPath, "GPU");
+    } catch {
+      try {
+        return await createWithPaths(wasmRoot, modelPath, "CPU");
+      } catch {
+        return await createWithPaths(
+          FACE_LANDMARKER_ASSETS.cdnWasmRoot,
+          OBJECT_DETECTOR_ASSETS.cdnModelPath,
+          "CPU"
+        );
+      }
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Khởi tạo HandLandmarker (21 điểm bàn tay) để nhận diện cử chỉ lướt điện thoại/iPad.
+ * Trả về null an toàn nếu không nạp được.
+ */
+export async function createStudyHandLandmarker(): Promise<HandLandmarker | null> {
+  try {
+    const vision = await import("@mediapipe/tasks-vision");
+    const [hasLocalModel, wasmRoot] = await Promise.all([
+      isLocalAssetAvailable(HAND_LANDMARKER_ASSETS.localModelPath),
+      resolveWasmRoot(),
+    ]);
+    const modelPath = hasLocalModel
+      ? HAND_LANDMARKER_ASSETS.localModelPath
+      : HAND_LANDMARKER_ASSETS.cdnModelPath;
+
+    const createWithPaths = async (
+      resolvedWasmRoot: string,
+      resolvedModelPath: string,
+      delegate: "GPU" | "CPU"
+    ): Promise<HandLandmarker> => {
+      return runAsyncWithFilteredMediaPipeLogs(async () => {
+        const filesetResolver = await vision.FilesetResolver.forVisionTasks(
+          resolvedWasmRoot
+        );
+        return vision.HandLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: resolvedModelPath,
+            delegate,
+          },
+          runningMode: "VIDEO",
+          numHands: 2,
+          minHandDetectionConfidence: 0.45,
+          minHandPresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
+        });
+      });
+    };
+
+    try {
+      return await createWithPaths(wasmRoot, modelPath, "GPU");
+    } catch {
+      try {
+        return await createWithPaths(wasmRoot, modelPath, "CPU");
+      } catch {
+        return await createWithPaths(
+          FACE_LANDMARKER_ASSETS.cdnWasmRoot,
+          HAND_LANDMARKER_ASSETS.cdnModelPath,
+          "CPU"
+        );
+      }
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nạp đồng thời bộ 3 mô hình cho Tab Giám sát Học tập:
+ * FaceLandmarker (bắt buộc) + ObjectDetector (ĐT/iPad) + HandLandmarker (lướt tay).
+ */
+export async function createStudyVisionBundle(): Promise<LoadedStudyVisionModels> {
+  const [faceResult, objectDetector, handLandmarker] = await Promise.all([
+    createStudyFaceLandmarker(),
+    createStudyObjectDetector(),
+    createStudyHandLandmarker(),
+  ]);
+
+  return {
+    faceLandmarker: faceResult.landmarker,
+    objectDetector,
+    handLandmarker,
+    source: faceResult.source,
+  };
 }

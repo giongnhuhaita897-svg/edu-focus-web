@@ -2,15 +2,24 @@ import {
   STUDY_FOCUS_THRESHOLDS,
   StudyFocusThresholds,
 } from "@/modules/webcam/thresholds";
+import { DetectedDistractionDevice } from "@/modules/webcam/distraction-detectors";
 
 export type StudyFocusStatus =
   | "idle"
   | "focused"
   | "distracted"
   | "drowsy"
-  | "absent";
+  | "absent"
+  | "phone_distracted"
+  | "scrolling_distracted";
 
-export type StudyAlertType = "none" | "distracted" | "drowsy" | "absent";
+export type StudyAlertType =
+  | "none"
+  | "distracted"
+  | "drowsy"
+  | "absent"
+  | "phone_distracted"
+  | "scrolling_distracted";
 
 export interface NormalizedLandmarkPoint {
   x: number;
@@ -34,12 +43,25 @@ export interface FaceFrameMetrics {
   hasFace: boolean;
   /** Mức độ nhắm mắt (0 = mở to, 1 = nhắm kín) */
   eyeClosureScore: number;
+  /** Mức độ ánh mắt nhìn xuống (0..1) từ blendshapes eyeLookDownLeft/Right */
+  eyeLookDownScore?: number;
   /** Góc quay mặt trái/phải (độ) */
   yawDeg: number;
   /** Góc cúi/ngẩng đầu (độ, dương = cúi xuống) */
   pitchDeg: number;
   /** Góc nghiêng đầu trái/phải (độ) */
   rollDeg: number;
+}
+
+export interface FrameDistractionExtras {
+  /** Danh sách điện thoại / iPad phát hiện trong khung hình */
+  detectedDevices?: DetectedDistractionDevice[];
+  /** Có đang phát hiện cử chỉ tay lướt lặp lại không */
+  isHandScrolling?: boolean;
+  /** Chế độ Ghi chép vở: nới lỏng cảnh báo nhìn xuống/cúi đầu nhẹ để học sinh thoải mái viết bài */
+  noteTakingMode?: boolean;
+  /** Bật/tắt nhận diện điện thoại/iPad & lướt tay */
+  enableDeviceAndHandDetection?: boolean;
 }
 
 export interface StudyTrackerSnapshot {
@@ -50,6 +72,9 @@ export interface StudyTrackerSnapshot {
   totalTrackedMs: number;
   distractionCount: number;
   drowsinessAlertCount: number;
+  deviceDistractionCount: number;
+  activeDevices: DetectedDistractionDevice[];
+  isHandScrolling: boolean;
   currentIssueDurationMs: number;
   metrics: FaceFrameMetrics;
   justTriggeredAlert: StudyAlertType;
@@ -58,6 +83,7 @@ export interface StudyTrackerSnapshot {
 export const EMPTY_FACE_METRICS: FaceFrameMetrics = {
   hasFace: false,
   eyeClosureScore: 0,
+  eyeLookDownScore: 0,
   yawDeg: 0,
   pitchDeg: 0,
   rollDeg: 0,
@@ -144,17 +170,20 @@ export function extractFaceFrameMetrics(
 
   const { yawDeg, pitchDeg, rollDeg } = estimateHeadPoseFromLandmarks(landmarks);
 
-  // Ưu tiên dùng eyeBlinkLeft & eyeBlinkRight từ MediaPipe Blendshapes
   const categories = result?.faceBlendshapes?.[0]?.categories ?? [];
   const leftBlink = categories.find((c) => c.categoryName === "eyeBlinkLeft")?.score;
   const rightBlink = categories.find((c) => c.categoryName === "eyeBlinkRight")?.score;
+  const leftLookDown = categories.find(
+    (c) => c.categoryName === "eyeLookDownLeft"
+  )?.score;
+  const rightLookDown = categories.find(
+    (c) => c.categoryName === "eyeLookDownRight"
+  )?.score;
 
   let eyeClosureScore = 0;
   if (typeof leftBlink === "number" && typeof rightBlink === "number") {
-    // Lấy min để tránh nháy 1 mắt bị báo nhầm là ngủ gật
     eyeClosureScore = Math.round(Math.min(leftBlink, rightBlink) * 100) / 100;
   } else {
-    // Dự phòng bằng EAR nếu không có blendshapes
     const leftEar = computeEyeAspectRatio(landmarks, [33, 160, 158, 133, 153, 144]);
     const rightEar = computeEyeAspectRatio(landmarks, [362, 385, 387, 263, 373, 380]);
     const avgEar = (leftEar + rightEar) / 2;
@@ -164,9 +193,15 @@ export function extractFaceFrameMetrics(
         : clamp(1 - avgEar / 0.35, 0, 0.45);
   }
 
+  const eyeLookDownScore =
+    typeof leftLookDown === "number" && typeof rightLookDown === "number"
+      ? Math.round(((leftLookDown + rightLookDown) / 2) * 100) / 100
+      : 0;
+
   return {
     hasFace: true,
     eyeClosureScore,
+    eyeLookDownScore,
     yawDeg,
     pitchDeg,
     rollDeg,
@@ -177,8 +212,12 @@ export function getStatusDisplayLabel(status: StudyFocusStatus): string {
   switch (status) {
     case "focused":
       return "Đang tập trung tốt";
+    case "phone_distracted":
+      return "Xao nhãng (Điện thoại / iPad)";
+    case "scrolling_distracted":
+      return "Xao nhãng (Đang lướt tay)";
     case "distracted":
-      return "Mất tập trung (Quay mặt)";
+      return "Mất tập trung (Quay mặt / Nhìn xuống)";
     case "drowsy":
       return "Cảnh báo buồn ngủ / Gục đầu";
     case "absent":
@@ -200,16 +239,22 @@ export class StudyFocusTracker {
   private focusedMs = 0;
   private distractionCount = 0;
   private drowsinessAlertCount = 0;
+  private deviceDistractionCount = 0;
 
   private drowsyStreakMs = 0;
   private distractedStreakMs = 0;
+  private lookDownStreakMs = 0;
   private absentStreakMs = 0;
+  private deviceStreakMs = 0;
+  private scrollingStreakMs = 0;
 
   private lastDrowsyAlertAtMs = -Infinity;
   private lastDistractionAlertAtMs = -Infinity;
 
   private currentStatus: StudyFocusStatus = "idle";
   private lastMetrics: FaceFrameMetrics = { ...EMPTY_FACE_METRICS };
+  private lastDevices: DetectedDistractionDevice[] = [];
+  private lastIsHandScrolling = false;
 
   constructor(thresholds: StudyFocusThresholds = STUDY_FOCUS_THRESHOLDS) {
     this.thresholds = thresholds;
@@ -221,18 +266,25 @@ export class StudyFocusTracker {
     this.focusedMs = 0;
     this.distractionCount = 0;
     this.drowsinessAlertCount = 0;
+    this.deviceDistractionCount = 0;
     this.drowsyStreakMs = 0;
     this.distractedStreakMs = 0;
+    this.lookDownStreakMs = 0;
     this.absentStreakMs = 0;
+    this.deviceStreakMs = 0;
+    this.scrollingStreakMs = 0;
     this.lastDrowsyAlertAtMs = -Infinity;
     this.lastDistractionAlertAtMs = -Infinity;
     this.currentStatus = "idle";
     this.lastMetrics = { ...EMPTY_FACE_METRICS };
+    this.lastDevices = [];
+    this.lastIsHandScrolling = false;
   }
 
   public processFrame(
     metrics: FaceFrameMetrics,
-    nowMs: number
+    nowMs: number,
+    extras?: FrameDistractionExtras
   ): StudyTrackerSnapshot {
     const rawDelta =
       this.lastTimestampMs === null ? 0 : Math.max(0, nowMs - this.lastTimestampMs);
@@ -240,16 +292,34 @@ export class StudyFocusTracker {
     this.lastTimestampMs = nowMs;
     this.lastMetrics = metrics;
 
+    const enableDeviceAndHand = extras?.enableDeviceAndHandDetection !== false;
+    const noteTakingMode = Boolean(extras?.noteTakingMode);
+    const detectedDevices = enableDeviceAndHand
+      ? extras?.detectedDevices ?? []
+      : [];
+    const isHandScrolling = enableDeviceAndHand
+      ? Boolean(extras?.isHandScrolling)
+      : false;
+
+    this.lastDevices = detectedDevices;
+    this.lastIsHandScrolling = isHandScrolling;
+
     let justTriggeredAlert: StudyAlertType = "none";
 
     if (!metrics.hasFace) {
       this.absentStreakMs += deltaMs;
       this.drowsyStreakMs = 0;
       this.distractedStreakMs = 0;
+      this.lookDownStreakMs = 0;
+      this.deviceStreakMs = 0;
+      this.scrollingStreakMs = 0;
 
       if (this.absentStreakMs >= this.thresholds.absenceDurationMs) {
         this.currentStatus = "absent";
-        if (nowMs - this.lastDistractionAlertAtMs >= this.thresholds.distractionCooldownMs) {
+        if (
+          nowMs - this.lastDistractionAlertAtMs >=
+          this.thresholds.distractionCooldownMs
+        ) {
           this.distractionCount += 1;
           this.lastDistractionAlertAtMs = nowMs;
           justTriggeredAlert = "absent";
@@ -262,17 +332,27 @@ export class StudyFocusTracker {
 
       const isEyesClosed =
         metrics.eyeClosureScore >= this.thresholds.eyeBlinkScoreThreshold;
-      const isHeadDropped =
-        metrics.pitchDeg >= this.thresholds.headPitchDownThresholdDeg;
+      // Ở chế độ Ghi chép vở, chỉ báo gục đầu ngủ khi cúi sâu hơn bình thường (+12 độ)
+      const effectiveHeadDropDeg = noteTakingMode
+        ? this.thresholds.headPitchDownThresholdDeg + 12
+        : this.thresholds.headPitchDownThresholdDeg;
+      const isHeadDropped = metrics.pitchDeg >= effectiveHeadDropDeg;
       const isDrowsySignal = isEyesClosed || isHeadDropped;
+
+      const hasDistractionDevice = detectedDevices.length > 0;
+      const isLookingDownSubtle =
+        (metrics.eyeLookDownScore ?? 0) >= this.thresholds.eyeLookDownThreshold &&
+        metrics.pitchDeg >= this.thresholds.headPitchLookDownThresholdDeg;
 
       const isLookingAway =
         Math.abs(metrics.yawDeg) >= this.thresholds.headYawDistractionDeg ||
-        Math.abs(metrics.pitchDeg) >= this.thresholds.headPitchDistractionDeg;
+        (!noteTakingMode &&
+          Math.abs(metrics.pitchDeg) >= this.thresholds.headPitchDistractionDeg);
 
       if (isDrowsySignal) {
         this.drowsyStreakMs += deltaMs;
         this.distractedStreakMs = 0;
+        this.lookDownStreakMs = 0;
 
         if (this.drowsyStreakMs >= this.thresholds.drowsyDurationMs) {
           this.currentStatus = "drowsy";
@@ -284,11 +364,83 @@ export class StudyFocusTracker {
         } else if (this.currentStatus === "idle") {
           this.currentStatus = "focused";
         }
+      } else if (hasDistractionDevice) {
+        this.deviceStreakMs += deltaMs;
+        this.drowsyStreakMs = 0;
+        this.distractedStreakMs = 0;
+        this.lookDownStreakMs = 0;
+
+        // Nếu vừa cầm điện thoại/iPad vừa lướt tay thì nhắc sớm hơn một chút
+        const neededDeviceMs = isHandScrolling
+          ? Math.round(this.thresholds.deviceDistractionDurationMs * 0.65)
+          : this.thresholds.deviceDistractionDurationMs;
+
+        if (this.deviceStreakMs >= neededDeviceMs) {
+          this.currentStatus = "phone_distracted";
+          if (
+            nowMs - this.lastDistractionAlertAtMs >=
+            this.thresholds.distractionCooldownMs
+          ) {
+            this.distractionCount += 1;
+            this.deviceDistractionCount += 1;
+            this.lastDistractionAlertAtMs = nowMs;
+            justTriggeredAlert = "phone_distracted";
+          }
+        } else if (this.currentStatus === "idle") {
+          this.currentStatus = "focused";
+        }
+      } else if (isHandScrolling) {
+        this.scrollingStreakMs += deltaMs;
+        this.deviceStreakMs = Math.max(0, this.deviceStreakMs - deltaMs);
+        this.drowsyStreakMs = 0;
+        this.distractedStreakMs = 0;
+
+        // Lướt tay kèm nhìn xuống sẽ nhận diện nhanh hơn; chỉ lướt tay thuần cần bền hơn để tránh nhắc nhầm
+        const neededScrollMs = isLookingDownSubtle
+          ? Math.round(this.thresholds.scrollingDurationMs * 0.65)
+          : this.thresholds.scrollingDurationMs;
+
+        if (this.scrollingStreakMs >= neededScrollMs) {
+          this.currentStatus = "scrolling_distracted";
+          if (
+            nowMs - this.lastDistractionAlertAtMs >=
+            this.thresholds.distractionCooldownMs
+          ) {
+            this.distractionCount += 1;
+            this.deviceDistractionCount += 1;
+            this.lastDistractionAlertAtMs = nowMs;
+            justTriggeredAlert = "scrolling_distracted";
+          }
+        } else if (this.currentStatus === "idle") {
+          this.currentStatus = "focused";
+        }
       } else if (isLookingAway) {
         this.distractedStreakMs += deltaMs;
         this.drowsyStreakMs = 0;
+        this.deviceStreakMs = Math.max(0, this.deviceStreakMs - deltaMs);
+        this.scrollingStreakMs = Math.max(0, this.scrollingStreakMs - deltaMs);
 
         if (this.distractedStreakMs >= this.thresholds.distractionDurationMs) {
+          this.currentStatus = "distracted";
+          if (
+            nowMs - this.lastDistractionAlertAtMs >=
+            this.thresholds.distractionCooldownMs
+          ) {
+            this.distractionCount += 1;
+            this.lastDistractionAlertAtMs = nowMs;
+            justTriggeredAlert = "distracted";
+          }
+        } else if (this.currentStatus === "idle") {
+          this.currentStatus = "focused";
+        }
+      } else if (!noteTakingMode && isLookingDownSubtle) {
+        this.lookDownStreakMs += deltaMs;
+        this.drowsyStreakMs = 0;
+        this.distractedStreakMs = 0;
+        this.deviceStreakMs = Math.max(0, this.deviceStreakMs - deltaMs);
+        this.scrollingStreakMs = Math.max(0, this.scrollingStreakMs - deltaMs);
+
+        if (this.lookDownStreakMs >= this.thresholds.lookDownDistractionDurationMs) {
           this.currentStatus = "distracted";
           if (
             nowMs - this.lastDistractionAlertAtMs >=
@@ -304,6 +456,9 @@ export class StudyFocusTracker {
       } else {
         this.drowsyStreakMs = 0;
         this.distractedStreakMs = 0;
+        this.lookDownStreakMs = 0;
+        this.deviceStreakMs = Math.max(0, this.deviceStreakMs - deltaMs * 2);
+        this.scrollingStreakMs = Math.max(0, this.scrollingStreakMs - deltaMs * 2);
         this.currentStatus = "focused";
       }
     }
@@ -331,8 +486,12 @@ export class StudyFocusTracker {
     const currentIssueDurationMs =
       this.currentStatus === "drowsy"
         ? this.drowsyStreakMs
+        : this.currentStatus === "phone_distracted"
+        ? this.deviceStreakMs
+        : this.currentStatus === "scrolling_distracted"
+        ? this.scrollingStreakMs
         : this.currentStatus === "distracted"
-        ? this.distractedStreakMs
+        ? Math.max(this.distractedStreakMs, this.lookDownStreakMs)
         : this.currentStatus === "absent"
         ? this.absentStreakMs
         : 0;
@@ -345,6 +504,9 @@ export class StudyFocusTracker {
       totalTrackedMs: this.totalTrackedMs,
       distractionCount: this.distractionCount,
       drowsinessAlertCount: this.drowsinessAlertCount,
+      deviceDistractionCount: this.deviceDistractionCount,
+      activeDevices: this.lastDevices,
+      isHandScrolling: this.lastIsHandScrolling,
       currentIssueDurationMs,
       metrics: this.lastMetrics,
       justTriggeredAlert,
