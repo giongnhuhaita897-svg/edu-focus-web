@@ -327,6 +327,9 @@ export interface RecordPomodoroWorkInput {
   workMinutes: number;
   goalId?: string;
   scheduleEventId?: string;
+  focusScorePercent?: number;
+  distractionCount?: number;
+  drowsinessAlertCount?: number;
 }
 
 export function recordPomodoroWorkSessionInState(
@@ -342,6 +345,19 @@ export function recordPomodoroWorkSessionInState(
   const nowIso = new Date().toISOString();
   const startedIso = new Date(Date.now() - minutes * 60 * 1000).toISOString();
 
+  const focusScorePercent =
+    typeof input.focusScorePercent === "number"
+      ? Math.max(0, Math.min(100, Math.round(input.focusScorePercent)))
+      : 100;
+  const distractionCount = Math.max(
+    0,
+    Math.round(input.distractionCount ?? 0)
+  );
+  const drowsinessAlertCount =
+    typeof input.drowsinessAlertCount === "number"
+      ? Math.max(0, Math.round(input.drowsinessAlertCount))
+      : undefined;
+
   const newSession: FocusSession = {
     id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     scheduleEventId: input.scheduleEventId || undefined,
@@ -350,8 +366,9 @@ export function recordPomodoroWorkSessionInState(
     startedAt: startedIso,
     endedAt: nowIso,
     durationMinutes: minutes,
-    focusScorePercent: 100,
-    distractionCount: 0,
+    focusScorePercent,
+    distractionCount,
+    ...(drowsinessAlertCount !== undefined ? { drowsinessAlertCount } : {}),
   };
 
   const nextGoals = effectiveGoalId
