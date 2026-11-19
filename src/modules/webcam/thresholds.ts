@@ -56,12 +56,22 @@ export interface StudyFocusThresholds {
   /** Thời gian lướt tay liên tục (ms) trước khi báo xao nhãng */
   scrollingDurationMs: number;
 
+  // --- Quy tắc Phạt Kỷ luật (Tự động kết thúc phiên & phạt về 0 phút) ---
+  /** Số lần xao nhãng tối đa cho phép; vượt quá (> 10, tức từ 11 lần) sẽ kết thúc phiên & phạt 0 phút */
+  maxDistractionsBeforePenalty: number;
+  /** Phần trăm tập trung tối thiểu; xuống dưới (< 75%) sẽ kết thúc phiên & phạt 0 phút */
+  minFocusScorePercentBeforePenalty: number;
+  /** Thời gian đệm khởi động đầu phiên (ms) trước khi áp dụng ngưỡng < 75% (tránh vừa mở cam đã bị phạt) */
+  penaltyMinTrackedMs: number;
+
   // --- Vòng lặp & Âm thanh ---
   /** Chu kỳ phân tích khuôn mặt (ms) — 120ms ~ 8 FPS */
   detectionIntervalMs: number;
   /** Giới hạn bước thời gian tối đa mỗi lần cập nhật (ms) để tránh lệch khi chuyển tab */
   maxFrameDeltaMs: number;
-  /** Tần số và độ dài âm thanh nhắc nhở nhẹ nhàng (Web Audio API) */
+  /** Đường dẫn tệp âm thanh cảnh báo típ-típ-típ trong public/sounds/ */
+  alertBeepAudioPath: string;
+  /** Tần số và độ dài âm thanh nhắc nhở dự phòng (Web Audio API) */
   alertAudioFrequencyHz: number;
   alertAudioDurationMs: number;
 }
@@ -93,10 +103,15 @@ export const STUDY_FOCUS_THRESHOLDS: StudyFocusThresholds = {
   scrollMinFlickCount: 3,
   scrollingDurationMs: 2800,
 
+  maxDistractionsBeforePenalty: 10,
+  minFocusScorePercentBeforePenalty: 75,
+  penaltyMinTrackedMs: 10000,
+
   detectionIntervalMs: 120,
   maxFrameDeltaMs: 1000,
-  alertAudioFrequencyHz: 520,
-  alertAudioDurationMs: 220,
+  alertBeepAudioPath: "/sounds/tip-tip-tip.mp3",
+  alertAudioFrequencyHz: 2400,
+  alertAudioDurationMs: 95,
 };
 
 export const FACE_LANDMARKER_ASSETS = {

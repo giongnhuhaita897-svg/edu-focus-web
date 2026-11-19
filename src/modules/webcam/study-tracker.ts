@@ -64,6 +64,13 @@ export interface FrameDistractionExtras {
   enableDeviceAndHandDetection?: boolean;
 }
 
+export interface StudyPenaltyEvaluation {
+  shouldTerminateWithPenalty: boolean;
+  tooManyDistractions: boolean;
+  lowFocusScore: boolean;
+  penaltyReason: string | null;
+}
+
 export interface StudyTrackerSnapshot {
   status: StudyFocusStatus;
   statusLabel: string;
@@ -78,6 +85,47 @@ export interface StudyTrackerSnapshot {
   currentIssueDurationMs: number;
   metrics: FaceFrameMetrics;
   justTriggeredAlert: StudyAlertType;
+  shouldTerminateWithPenalty: boolean;
+  penaltyReason: string | null;
+  penaltyTriggers: {
+    tooManyDistractions: boolean;
+    lowFocusScore: boolean;
+  };
+}
+
+/**
+ * Đánh giá điều kiện kỷ luật kết thúc phiên và phạt số phút tích lũy về 0:
+ * - Xao nhãng trên 10 lần (> 10), HOẶC
+ * - Độ tập trung dưới 75% (< 75%, sau thời gian đệm khởi động đầu phiên), HOẶC cả hai.
+ */
+export function evaluateStudyPenalty(
+  distractionCount: number,
+  focusScorePercent: number,
+  totalTrackedMs: number,
+  thresholds: StudyFocusThresholds = STUDY_FOCUS_THRESHOLDS
+): StudyPenaltyEvaluation {
+  const tooManyDistractions =
+    distractionCount > thresholds.maxDistractionsBeforePenalty;
+  const lowFocusScore =
+    totalTrackedMs >= thresholds.penaltyMinTrackedMs &&
+    focusScorePercent < thresholds.minFocusScorePercentBeforePenalty;
+  const shouldTerminateWithPenalty = tooManyDistractions || lowFocusScore;
+
+  let penaltyReason: string | null = null;
+  if (tooManyDistractions && lowFocusScore) {
+    penaltyReason = `Số lần xao nhãng vượt quá ${thresholds.maxDistractionsBeforePenalty} (${distractionCount} lần) và độ tập trung xuống dưới ${thresholds.minFocusScorePercentBeforePenalty}% (${focusScorePercent}%).`;
+  } else if (tooManyDistractions) {
+    penaltyReason = `Số lần xao nhãng vượt quá ${thresholds.maxDistractionsBeforePenalty} (${distractionCount} lần).`;
+  } else if (lowFocusScore) {
+    penaltyReason = `Độ tập trung xuống dưới ${thresholds.minFocusScorePercentBeforePenalty}% (${focusScorePercent}%).`;
+  }
+
+  return {
+    shouldTerminateWithPenalty,
+    tooManyDistractions,
+    lowFocusScore,
+    penaltyReason,
+  };
 }
 
 export const EMPTY_FACE_METRICS: FaceFrameMetrics = {
@@ -496,6 +544,13 @@ export class StudyFocusTracker {
         ? this.absentStreakMs
         : 0;
 
+    const penalty = evaluateStudyPenalty(
+      this.distractionCount,
+      focusScorePercent,
+      this.totalTrackedMs,
+      this.thresholds
+    );
+
     return {
       status: this.currentStatus,
       statusLabel: getStatusDisplayLabel(this.currentStatus),
@@ -510,6 +565,12 @@ export class StudyFocusTracker {
       currentIssueDurationMs,
       metrics: this.lastMetrics,
       justTriggeredAlert,
+      shouldTerminateWithPenalty: penalty.shouldTerminateWithPenalty,
+      penaltyReason: penalty.penaltyReason,
+      penaltyTriggers: {
+        tooManyDistractions: penalty.tooManyDistractions,
+        lowFocusScore: penalty.lowFocusScore,
+      },
     };
   }
 }

@@ -8,6 +8,7 @@ import {
   STUDY_FOCUS_THRESHOLDS,
 } from "@/modules/webcam/thresholds";
 import {
+  evaluateStudyPenalty,
   extractFaceFrameMetrics,
   NormalizedLandmarkPoint,
   StudyFocusTracker,
@@ -23,7 +24,11 @@ import {
   runWithFilteredMediaPipeLogs,
 } from "@/modules/webcam/face-landmarker-loader";
 import { WebcamPlaceholder } from "@/modules/webcam/WebcamPlaceholder";
-import { loadAppState } from "@/lib/storage/local-db";
+import {
+  createDefaultState,
+  loadAppState,
+  recordPenalizedStudySessionInState,
+} from "@/lib/storage/local-db";
 
 function createSyntheticFaceLandmarks(opts?: {
   noseOffsetX?: number;
@@ -412,5 +417,60 @@ describe("Webcam AI — Tab Giám sát Ngồi học & Tập trung (FaceLandmarke
     expect(noteToggle).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(deviceToggle);
     expect(deviceToggle).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("kích hoạt phạt kết thúc phiên & đặt 0 phút tích lũy khi xao nhãng > 10 HOẶC độ tập trung < 75% (hoặc cả hai)", () => {
+    // 1. Đúng ngưỡng an toàn (10 lần, 75%) -> chưa phạt
+    const safeEval = evaluateStudyPenalty(10, 75, 20000);
+    expect(safeEval.shouldTerminateWithPenalty).toBe(false);
+
+    // 2. Chỉ vi phạm xao nhãng > 10 (11 lần, 88%) -> phạt
+    const onlyDistractions = evaluateStudyPenalty(11, 88, 20000);
+    expect(onlyDistractions.shouldTerminateWithPenalty).toBe(true);
+    expect(onlyDistractions.tooManyDistractions).toBe(true);
+    expect(onlyDistractions.lowFocusScore).toBe(false);
+
+    // 3. Chỉ vi phạm tập trung < 75% (3 lần, 74%, đã qua thời gian đệm) -> phạt
+    const onlyLowFocus = evaluateStudyPenalty(3, 74, 20000);
+    expect(onlyLowFocus.shouldTerminateWithPenalty).toBe(true);
+    expect(onlyLowFocus.tooManyDistractions).toBe(false);
+    expect(onlyLowFocus.lowFocusScore).toBe(true);
+
+    // 4. Vi phạm cả hai (12 lần, 68%) -> phạt và nêu rõ cả 2 lý do
+    const bothTriggered = evaluateStudyPenalty(12, 68, 20000);
+    expect(bothTriggered.shouldTerminateWithPenalty).toBe(true);
+    expect(bothTriggered.tooManyDistractions).toBe(true);
+    expect(bothTriggered.lowFocusScore).toBe(true);
+    expect(bothTriggered.penaltyReason).toMatch(/vượt quá 10/i);
+    expect(bothTriggered.penaltyReason).toMatch(/dưới 75%/i);
+
+    // 5. Ghi nhận phiên phạt vào local-db: durationMinutes = 0 và KHÔNG cộng phút vào mục tiêu
+    const beforeState = createDefaultState();
+    const beforeGoalHours = beforeState.goals[0].completedHours;
+    const afterPenalty = recordPenalizedStudySessionInState(beforeState, {
+      presetId: "25_5",
+      focusScorePercent: 68,
+      distractionCount: 12,
+      drowsinessAlertCount: 1,
+      penaltyReason: bothTriggered.penaltyReason!,
+    });
+
+    expect(afterPenalty.goals[0].completedHours).toBe(beforeGoalHours);
+    const saved =
+      afterPenalty.focusSessions[afterPenalty.focusSessions.length - 1];
+    expect(saved.durationMinutes).toBe(0);
+    expect(saved.penalized).toBe(true);
+    expect(saved.distractionCount).toBe(12);
+    expect(saved.focusScorePercent).toBe(68);
+  });
+
+  it("hiển thị nút nghe thử tiếng típ típ và đường dẫn âm thanh chuẩn", () => {
+    expect(STUDY_FOCUS_THRESHOLDS.alertBeepAudioPath).toBe(
+      "/sounds/tip-tip-tip.mp3"
+    );
+    render(<WebcamPlaceholder />);
+    const testSoundBtn = screen.getByTestId("test-tip-sound-btn");
+    expect(testSoundBtn).toBeInTheDocument();
+    fireEvent.click(testSoundBtn);
   });
 });

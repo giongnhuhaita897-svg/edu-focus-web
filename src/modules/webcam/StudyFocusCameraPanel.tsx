@@ -35,7 +35,10 @@ import {
   formatSecondsToMMSS,
   POMODORO_PRESETS,
 } from "@/modules/pomodoro/PomodoroHub";
-import { recordPomodoroWorkSessionInState } from "@/lib/storage/local-db";
+import {
+  recordPenalizedStudySessionInState,
+  recordPomodoroWorkSessionInState,
+} from "@/lib/storage/local-db";
 import { STUDY_FOCUS_THRESHOLDS } from "@/modules/webcam/thresholds";
 import {
   extractFaceFrameMetrics,
@@ -59,6 +62,7 @@ import {
 import {
   CameraPrivacyMode,
   playGentleAlertTone,
+  playTipTipTipAlert,
   renderStudyOverlayCanvas,
 } from "@/modules/webcam/face-canvas-renderer";
 
@@ -93,6 +97,7 @@ export function StudyFocusCameraPanel({
   const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false);
   const [modelSource, setModelSource] = useState<ModelLoadSource | null>(null);
   const [cameraError, setCameraError] = useState<string>("");
+  const [penaltyNotice, setPenaltyNotice] = useState<string>("");
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [liveAlertText, setLiveAlertText] = useState<string>("");
   const [pomodoroJustFinished, setPomodoroJustFinished] =
@@ -145,6 +150,12 @@ export function StudyFocusCameraPanel({
   const dbStateRef = useRef<AppDatabaseState>(dbState);
   const selectedGoalIdRef = useRef<string>(selectedGoalId);
   const selectedPresetRef = useRef<PomodoroPresetId>(selectedPreset);
+  const secondsLeftRef = useRef<number>(secondsLeft);
+  const penaltyTriggeredRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    secondsLeftRef.current = secondsLeft;
+  }, [secondsLeft]);
 
   useEffect(() => {
     privacyModeRef.current = privacyMode;
@@ -307,6 +318,64 @@ export function StudyFocusCameraPanel({
     [onSessionSaved]
   );
 
+  const terminateSessionWithPenalty = useCallback(
+    (snap: StudyTrackerSnapshot) => {
+      if (penaltyTriggeredRef.current) return;
+      penaltyTriggeredRef.current = true;
+
+      const presetId = selectedPresetRef.current;
+      const workMinutes = POMODORO_PRESETS[presetId].workMinutes;
+      const elapsedSeconds = Math.max(0, workMinutes * 60 - secondsLeftRef.current);
+      const lostMinutes = Math.floor(elapsedSeconds / 60);
+      const reason =
+        snap.penaltyReason ??
+        `Số lần xao nhãng vượt quá ${STUDY_FOCUS_THRESHOLDS.maxDistractionsBeforePenalty} hoặc độ tập trung dưới ${STUDY_FOCUS_THRESHOLDS.minFocusScorePercentBeforePenalty}%.`;
+
+      setIsTimerRunning(false);
+      stopCameraResources();
+
+      const nextState = recordPenalizedStudySessionInState(dbStateRef.current, {
+        presetId,
+        focusScorePercent: snap.focusScorePercent,
+        distractionCount: snap.distractionCount,
+        drowsinessAlertCount: snap.drowsinessAlertCount,
+        penaltyReason: reason,
+      });
+
+      if (typeof window !== "undefined" && typeof window.fetch === "function") {
+        window
+          .fetch("/api/state", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(nextState),
+          })
+          .catch(() => {});
+      }
+
+      if (soundEnabledRef.current) {
+        playTipTipTipAlert(STUDY_FOCUS_THRESHOLDS.alertBeepAudioPath, 2);
+      }
+
+      const penaltyBanner =
+        `Phiên làm việc đã bị kết thúc & phạt về 0 phút tích lũy ` +
+        `(hủy ${lostMinutes}/${workMinutes} phút trước đó)! ` +
+        `Lý do: ${reason}`;
+
+      setPenaltyNotice(penaltyBanner);
+      setPomodoroJustFinished(false);
+      trackerRef.current.reset();
+      handScrollDetectorRef.current.reset();
+      latestDevicesRef.current = [];
+      latestHandsRef.current = [];
+      latestHandScrollingRef.current = false;
+      setSnapshot(trackerRef.current.getSnapshot());
+      setSecondsLeft(workMinutes * 60);
+
+      onSessionSaved(nextState, penaltyBanner);
+    },
+    [onSessionSaved, stopCameraResources]
+  );
+
   // Đếm ngược đồng hồ Pomodoro thuần túy (tránh gọi side-effect bên trong state updater ở React StrictMode)
   useEffect(() => {
     if (!isTimerRunning) return;
@@ -466,6 +535,12 @@ export function StudyFocusCameraPanel({
             }
           );
 
+          // Kiểm tra điều kiện kỷ luật: xao nhãng > 10 HOẶC độ tập trung < 75% -> kết thúc phiên & phạt 0 phút
+          if (nextSnap.shouldTerminateWithPenalty) {
+            terminateSessionWithPenalty(nextSnap);
+            return;
+          }
+
           if (nextSnap.justTriggeredAlert !== "none") {
             if (nextSnap.justTriggeredAlert === "drowsy") {
               setLiveAlertText(
@@ -492,10 +567,7 @@ export function StudyFocusCameraPanel({
             }
 
             if (soundEnabledRef.current) {
-              playGentleAlertTone(
-                STUDY_FOCUS_THRESHOLDS.alertAudioFrequencyHz,
-                STUDY_FOCUS_THRESHOLDS.alertAudioDurationMs
-              );
+              playTipTipTipAlert(STUDY_FOCUS_THRESHOLDS.alertBeepAudioPath, 1);
             }
           } else if (nextSnap.status === "focused") {
             setLiveAlertText("");
@@ -509,7 +581,7 @@ export function StudyFocusCameraPanel({
     };
 
     rafRef.current = requestAnimationFrame(step);
-  }, []);
+  }, [terminateSessionWithPenalty]);
 
   const openCameraStream = useCallback(
     async (explicitDeviceId?: string): Promise<MediaStream> => {
@@ -553,7 +625,9 @@ export function StudyFocusCameraPanel({
 
   const handleStartMonitoring = async (overrideDeviceId?: string) => {
     setCameraError("");
+    setPenaltyNotice("");
     setPomodoroJustFinished(false);
+    penaltyTriggeredRef.current = false;
 
     if (
       typeof navigator === "undefined" ||
@@ -671,6 +745,8 @@ export function StudyFocusCameraPanel({
     setSnapshot(trackerRef.current.getSnapshot());
     setSecondsLeft(currentPreset.workMinutes * 60);
     setPomodoroJustFinished(false);
+    setPenaltyNotice("");
+    penaltyTriggeredRef.current = false;
     setCameraError("");
   };
 
@@ -757,10 +833,50 @@ export function StudyFocusCameraPanel({
               ) : (
                 <VolumeX className="w-3.5 h-3.5" aria-hidden={true} />
               )}
-              <span>{soundEnabled ? "Âm nhắc: Bật" : "Âm nhắc: Tắt"}</span>
+              <span>{soundEnabled ? "Âm típ típ: Bật" : "Âm típ típ: Tắt"}</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="test-tip-sound-btn"
+              onClick={() =>
+                playTipTipTipAlert(STUDY_FOCUS_THRESHOLDS.alertBeepAudioPath, 1)
+              }
+              title="Nghe thử âm thanh cảnh báo típ típ típ"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-white text-edtech-primary hover:bg-blue-50 border border-blue-200 transition-colors"
+            >
+              <span>Thử tiếng típ típ</span>
             </button>
           </div>
         </div>
+
+        {penaltyNotice && (
+          <div
+            role="alert"
+            data-testid="study-penalty-banner"
+            className="p-4 rounded-xl bg-red-50 border-2 border-red-300 text-xs font-semibold text-red-800 flex items-start justify-between gap-3"
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle
+                className="w-4 h-4 text-red-600 shrink-0 mt-0.5"
+                aria-hidden={true}
+              />
+              <div className="space-y-1">
+                <p className="font-bold text-red-900">
+                  Cảnh báo Kỷ luật — Phạt 0 phút tích lũy!
+                </p>
+                <p className="leading-relaxed">{penaltyNotice}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPenaltyNotice("")}
+              className="underline text-red-700 hover:text-red-900 shrink-0"
+            >
+              Đóng
+            </button>
+          </div>
+        )}
 
         {cameraError && (
           <div
@@ -1226,19 +1342,42 @@ export function StudyFocusCameraPanel({
             </button>
           </div>
         ) : (
-          <div className="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 flex items-start gap-2.5">
-            <AlertTriangle
-              className="w-4 h-4 text-amber-600 shrink-0 mt-0.5"
-              aria-hidden={true}
-            />
-            <p className="text-xs text-edtech-text leading-relaxed">
-              Khi hết {currentPreset.workMinutes} phút ngồi học, hệ thống tự
-              động lưu phiên và gợi ý chuyển sang tab{" "}
-              <strong>
-                Giám sát Tập thể dục ({currentPreset.breakMinutes} phút)
-              </strong>{" "}
-              để vận động chống buồn ngủ.
-            </p>
+          <div className="space-y-2.5">
+            <div className="p-3.5 rounded-xl bg-red-50/80 border border-red-200 flex items-start gap-2.5">
+              <AlertTriangle
+                className="w-4 h-4 text-red-600 shrink-0 mt-0.5"
+                aria-hidden={true}
+              />
+              <p className="text-xs text-edtech-text leading-relaxed">
+                <strong>Quy tắc Kỷ luật:</strong> Nếu số lần xao nhãng{" "}
+                <strong>
+                  vượt quá {STUDY_FOCUS_THRESHOLDS.maxDistractionsBeforePenalty}
+                </strong>{" "}
+                hoặc độ tập trung{" "}
+                <strong>
+                  dưới{" "}
+                  {STUDY_FOCUS_THRESHOLDS.minFocusScorePercentBeforePenalty}%
+                </strong>{" "}
+                (một trong hai hoặc cả hai), phiên học sẽ tự động kết thúc và{" "}
+                <strong>phạt về 0 phút tích lũy</strong> kèm chuông báo típ típ
+                típ.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 flex items-start gap-2.5">
+              <AlertTriangle
+                className="w-4 h-4 text-amber-600 shrink-0 mt-0.5"
+                aria-hidden={true}
+              />
+              <p className="text-xs text-edtech-text leading-relaxed">
+                Khi hết {currentPreset.workMinutes} phút ngồi học đạt chuẩn, hệ
+                thống tự động lưu phiên và gợi ý chuyển sang tab{" "}
+                <strong>
+                  Giám sát Tập thể dục ({currentPreset.breakMinutes} phút)
+                </strong>{" "}
+                để vận động chống buồn ngủ.
+              </p>
+            </div>
           </div>
         )}
       </div>

@@ -252,6 +252,104 @@ export function renderStudyOverlayCanvas(
 }
 
 /**
+ * Phát chuỗi 3 tiếng "típ típ típ" bằng Web Audio API (dự phòng khi file mp3 không phát được).
+ */
+export function playSynthesizedTipTipTip(
+  frequencyHz = 2400,
+  beepDurationMs = 95,
+  bursts = 1
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!AudioCtx) return;
+
+    const ctx = new AudioCtx();
+    const beepSec = beepDurationMs / 1000;
+    const gapSec = 0.085;
+    const burstGapSec = 0.28;
+    const beepsPerBurst = 3;
+    const now = ctx.currentTime;
+
+    let endTime = now;
+    for (let b = 0; b < Math.max(1, bursts); b++) {
+      const burstStart = now + b * (beepsPerBurst * (beepSec + gapSec) + burstGapSec);
+      for (let i = 0; i < beepsPerBurst; i++) {
+        const start = burstStart + i * (beepSec + gapSec);
+        const stop = start + beepSec;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(frequencyHz, start);
+
+        gain.gain.setValueAtTime(0.001, start);
+        gain.gain.exponentialRampToValueAtTime(0.16, start + 0.012);
+        gain.gain.setValueAtTime(0.16, Math.max(start + 0.015, stop - 0.018));
+        gain.gain.exponentialRampToValueAtTime(0.001, stop);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(start);
+        osc.stop(stop + 0.01);
+        endTime = Math.max(endTime, stop + 0.05);
+      }
+    }
+
+    window.setTimeout(() => {
+      ctx.close().catch(() => {});
+    }, Math.ceil((endTime - now + 0.1) * 1000));
+  } catch {
+    // Bỏ qua nếu trình duyệt chặn autoplay audio
+  }
+}
+
+/**
+ * Phát âm thanh cảnh báo "típ típ típ" từ tệp MP3 nội bộ (/sounds/tip-tip-tip.mp3).
+ * Tự động dự phòng sang Web Audio API nếu trình duyệt không phát được tệp MP3.
+ */
+export function playTipTipTipAlert(
+  audioPath = "/sounds/tip-tip-tip.mp3",
+  repeatCount = 1
+): void {
+  if (typeof window === "undefined") return;
+  const safeRepeats = Math.max(1, Math.min(3, Math.round(repeatCount)));
+
+  if (typeof window.Audio !== "function") {
+    playSynthesizedTipTipTip(2400, 95, safeRepeats);
+    return;
+  }
+
+  try {
+    const audio = new window.Audio(audioPath);
+    audio.volume = 0.85;
+    let played = 1;
+
+    audio.onended = () => {
+      if (played < safeRepeats) {
+        played += 1;
+        audio.currentTime = 0;
+        audio.play().catch(() => {
+          playSynthesizedTipTipTip(2400, 95, 1);
+        });
+      }
+    };
+
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {
+        playSynthesizedTipTipTip(2400, 95, safeRepeats);
+      });
+    }
+  } catch {
+    playSynthesizedTipTipTip(2400, 95, safeRepeats);
+  }
+}
+
+/**
  * Phát âm thanh nhắc nhở nhẹ nhàng bằng Web Audio API (không cần file mp3).
  */
 export function playGentleAlertTone(
