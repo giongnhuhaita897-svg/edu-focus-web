@@ -10,6 +10,11 @@ import {
   NormalizedLandmarkPoint,
   StudyFocusTracker,
 } from "@/modules/webcam/study-tracker";
+import {
+  isBenignMediaPipeStderr,
+  pickPreferredCameraDeviceId,
+  runWithFilteredMediaPipeLogs,
+} from "@/modules/webcam/face-landmarker-loader";
 import { WebcamPlaceholder } from "@/modules/webcam/WebcamPlaceholder";
 import { loadAppState } from "@/lib/storage/local-db";
 
@@ -216,5 +221,39 @@ describe("Webcam AI — Tab Giám sát Ngồi học & Tập trung (FaceLandmarke
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("lọc bỏ log INFO vô hại của MediaPipe XNNPACK nhưng vẫn giữ nguyên lỗi thật", () => {
+    expect(
+      isBenignMediaPipeStderr([
+        "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.",
+      ])
+    ).toBe(true);
+    expect(isBenignMediaPipeStderr(["TypeError: Real bug"])).toBe(false);
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      runWithFilteredMediaPipeLogs(() => {
+        console.error(
+          "INFO: Created TensorFlow Lite XNNPACK delegate for CPU."
+        );
+        console.error("Real unexpected error");
+      });
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      expect(errSpy).toHaveBeenCalledWith("Real unexpected error");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("ưu tiên chọn webcam laptop vật lý và tránh camera ảo điện thoại (như Galaxy S23 Ultra / Phone Link)", () => {
+    const devices = [
+      { deviceId: "cam-phone", label: "Samsung Galaxy S23 Ultra (Phone Link)" },
+      { deviceId: "cam-virtual", label: "Windows Virtual Camera" },
+      { deviceId: "cam-laptop", label: "Integrated HD Webcam" },
+    ];
+
+    expect(pickPreferredCameraDeviceId(devices)).toBe("cam-laptop");
+    expect(pickPreferredCameraDeviceId(devices, "cam-phone")).toBe("cam-phone");
   });
 });

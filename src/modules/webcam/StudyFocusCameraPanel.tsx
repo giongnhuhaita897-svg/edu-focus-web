@@ -37,8 +37,12 @@ import {
   StudyTrackerSnapshot,
 } from "@/modules/webcam/study-tracker";
 import {
+  CameraDeviceOption,
   createStudyFaceLandmarker,
   ModelLoadSource,
+  pickPreferredCameraDeviceId,
+  PREFERRED_CAMERA_STORAGE_KEY,
+  runWithFilteredMediaPipeLogs,
 } from "@/modules/webcam/face-landmarker-loader";
 import {
   CameraPrivacyMode,
@@ -81,6 +85,10 @@ export function StudyFocusCameraPanel({
   const [liveAlertText, setLiveAlertText] = useState<string>("");
   const [pomodoroJustFinished, setPomodoroJustFinished] =
     useState<boolean>(false);
+  const [availableCameras, setAvailableCameras] = useState<
+    CameraDeviceOption[]
+  >([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>("");
 
   const trackerRef = useRef<StudyFocusTracker>(
     new StudyFocusTracker(STUDY_FOCUS_THRESHOLDS)
@@ -95,6 +103,7 @@ export function StudyFocusCameraPanel({
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastDetectTimeRef = useRef<number>(0);
+  const lastVideoTimestampRef = useRef<number>(0);
   const hasDrawnCanvasRef = useRef<boolean>(false);
 
   // Refs đồng bộ state mới nhất cho vòng lặp requestAnimationFrame
@@ -153,6 +162,51 @@ export function StudyFocusCameraPanel({
     setIsCameraActive(false);
     setLiveAlertText("");
   }, []);
+
+  const refreshCameraDevices = useCallback(
+    async (activeDeviceId?: string): Promise<CameraDeviceOption[]> => {
+      if (
+        typeof navigator === "undefined" ||
+        !navigator.mediaDevices ||
+        typeof navigator.mediaDevices.enumerateDevices !== "function"
+      ) {
+        return [];
+      }
+      try {
+        const allDevices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs: CameraDeviceOption[] = allDevices
+          .filter((d) => d.kind === "videoinput")
+          .map((d, idx) => ({
+            deviceId: d.deviceId,
+            label: d.label || `Camera ${idx + 1}`,
+          }));
+
+        setAvailableCameras(videoInputs);
+
+        const savedId =
+          typeof window !== "undefined"
+            ? window.localStorage.getItem(PREFERRED_CAMERA_STORAGE_KEY)
+            : null;
+        const preferred =
+          activeDeviceId ||
+          pickPreferredCameraDeviceId(videoInputs, savedId) ||
+          "";
+
+        if (preferred) {
+          setSelectedCameraId((prev) => activeDeviceId || prev || preferred);
+        }
+        return videoInputs;
+      } catch {
+        return [];
+      }
+    },
+    []
+  );
+
+  // Tải trước danh sách camera nếu trình duyệt đã cấp quyền từ trước
+  useEffect(() => {
+    refreshCameraDevices();
+  }, [refreshCameraDevices]);
 
   // Dọn dẹp camera và mô hình khi rời trang
   useEffect(() => {
@@ -251,23 +305,32 @@ export function StudyFocusCameraPanel({
 
       if (
         video.readyState >= 2 &&
+        video.videoWidth > 0 &&
+        video.videoHeight > 0 &&
         nowMs - lastDetectTimeRef.current >=
           STUDY_FOCUS_THRESHOLDS.detectionIntervalMs
       ) {
         lastDetectTimeRef.current = nowMs;
 
         if (
-          video.videoWidth > 0 &&
-          video.videoHeight > 0 &&
-          (canvas.width !== video.videoWidth ||
-            canvas.height !== video.videoHeight)
+          canvas.width !== video.videoWidth ||
+          canvas.height !== video.videoHeight
         ) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
         }
 
+        // MediaPipe VIDEO mode yêu cầu timestamp tăng dần nghiêm ngặt
+        const safeTimestampMs = Math.max(
+          Math.round(nowMs),
+          lastVideoTimestampRef.current + 1
+        );
+        lastVideoTimestampRef.current = safeTimestampMs;
+
         try {
-          const result = landmarker.detectForVideo(video, nowMs);
+          const result = runWithFilteredMediaPipeLogs(() =>
+            landmarker.detectForVideo(video, safeTimestampMs)
+          );
           const metrics = extractFaceFrameMetrics(
             result,
             STUDY_FOCUS_THRESHOLDS
@@ -318,7 +381,47 @@ export function StudyFocusCameraPanel({
     rafRef.current = requestAnimationFrame(step);
   }, []);
 
-  const handleStartMonitoring = async () => {
+  const openCameraStream = useCallback(
+    async (explicitDeviceId?: string): Promise<MediaStream> => {
+      const devices = await refreshCameraDevices();
+      const savedId =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(PREFERRED_CAMERA_STORAGE_KEY)
+          : null;
+      const targetDeviceId =
+        explicitDeviceId ||
+        selectedCameraId ||
+        pickPreferredCameraDeviceId(devices, savedId);
+
+      // Thử mở đúng thiết bị webcam laptop/USB trước để tránh Windows Phone Link gọi điện thoại
+      if (targetDeviceId) {
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: targetDeviceId },
+              width: { ideal: 640 },
+              height: { ideal: 360 },
+            },
+            audio: false,
+          });
+        } catch {
+          // Nếu thiết bị đã lưu không còn cắm, fallback sang camera mặc định
+        }
+      }
+
+      return navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          facingMode: "user",
+        },
+        audio: false,
+      });
+    },
+    [refreshCameraDevices, selectedCameraId]
+  );
+
+  const handleStartMonitoring = async (overrideDeviceId?: string) => {
     setCameraError("");
     setPomodoroJustFinished(false);
 
@@ -335,16 +438,27 @@ export function StudyFocusCameraPanel({
 
     setIsLoadingModel(true);
     try {
-      // 1. Xin quyền truy cập Webcam
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 360 },
-          facingMode: "user",
-        },
-        audio: false,
-      });
+      // 1. Xin quyền truy cập Webcam (ưu tiên camera laptop, tránh camera ảo điện thoại)
+      const stream = await openCameraStream(overrideDeviceId);
       streamRef.current = stream;
+
+      const activeTrackDeviceId =
+        stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+      if (activeTrackDeviceId) {
+        setSelectedCameraId(activeTrackDeviceId);
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.setItem(
+              PREFERRED_CAMERA_STORAGE_KEY,
+              activeTrackDeviceId
+            );
+          } catch {
+            // Bỏ qua lỗi quota
+          }
+        }
+      }
+      // Cập nhật lại tên đầy đủ các camera sau khi đã có quyền truy cập
+      await refreshCameraDevices(activeTrackDeviceId);
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -381,6 +495,21 @@ export function StudyFocusCameraPanel({
       }
     } finally {
       setIsLoadingModel(false);
+    }
+  };
+
+  const handleSwitchCamera = async (nextDeviceId: string) => {
+    setSelectedCameraId(nextDeviceId);
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(PREFERRED_CAMERA_STORAGE_KEY, nextDeviceId);
+      } catch {
+        // Bỏ qua lỗi quota
+      }
+    }
+    if (isCameraActive) {
+      stopCameraResources();
+      await handleStartMonitoring(nextDeviceId);
     }
   };
 
@@ -628,6 +757,31 @@ export function StudyFocusCameraPanel({
           </div>
         </div>
 
+        {/* Chọn thiết bị Camera (ưu tiên webcam laptop, tránh Windows Phone Link / điện thoại) */}
+        {availableCameras.length > 0 && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-xl bg-edtech-bg border border-edtech-border">
+            <label
+              htmlFor="study-camera-device-select"
+              className="text-xs font-bold text-edtech-text shrink-0"
+            >
+              Thiết bị Camera đang dùng:
+            </label>
+            <select
+              id="study-camera-device-select"
+              data-testid="study-camera-device-select"
+              value={selectedCameraId}
+              onChange={(e) => handleSwitchCamera(e.target.value)}
+              className="w-full sm:w-auto sm:min-w-[260px] px-3 py-1.5 rounded-lg bg-white border border-edtech-border text-xs font-medium text-edtech-text focus:outline-none focus:ring-2 focus:ring-edtech-primary"
+            >
+              {availableCameras.map((cam) => (
+                <option key={cam.deviceId} value={cam.deviceId}>
+                  {cam.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* Thanh điều khiển Camera & Lưu phiên */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -635,7 +789,7 @@ export function StudyFocusCameraPanel({
               <button
                 type="button"
                 disabled={isLoadingModel}
-                onClick={handleStartMonitoring}
+                onClick={() => handleStartMonitoring()}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-edtech-primary hover:bg-edtech-primaryHover disabled:opacity-60 text-white text-xs font-bold shadow-sm transition-colors"
               >
                 {isLoadingModel ? (
