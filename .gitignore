@@ -38,3 +38,5 @@ next-env.d.ts
 # OS / Editor
 .DS_Store
 Thumbs.db
+
+.vercel
