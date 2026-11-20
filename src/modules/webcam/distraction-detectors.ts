@@ -2,6 +2,7 @@ import {
   STUDY_FOCUS_THRESHOLDS,
   StudyFocusThresholds,
 } from "@/modules/webcam/thresholds";
+import { HUMAN_OBSERVER_THRESHOLDS } from "@/modules/webcam/observer-thresholds";
 
 export type DistractionDeviceKind = "phone" | "tablet_screen";
 
@@ -41,6 +42,10 @@ export interface HandScrollSnapshot {
   isScrolling: boolean;
   flickCount: number;
   dominantAxis: "vertical" | "horizontal" | "none";
+  /** Số bàn tay đang thấy trong khung hình */
+  handCount: number;
+  /** Có bàn tay đặt thấp trong khung hình (tư thế cầm điện thoại trước ngực / dưới bàn) */
+  handsInLowerZone: boolean;
 }
 
 /**
@@ -148,10 +153,15 @@ function countRhythmicFlicks(
  */
 export class HandScrollDetector {
   private readonly thresholds: StudyFocusThresholds;
+  private readonly lowerZoneMinWristY: number;
   private samples: FingerSample[] = [];
 
-  constructor(thresholds: StudyFocusThresholds = STUDY_FOCUS_THRESHOLDS) {
+  constructor(
+    thresholds: StudyFocusThresholds = STUDY_FOCUS_THRESHOLDS,
+    lowerZoneMinWristY: number = HUMAN_OBSERVER_THRESHOLDS.lowerZoneMinWristY
+  ) {
     this.thresholds = thresholds;
+    this.lowerZoneMinWristY = lowerZoneMinWristY;
   }
 
   public reset(): void {
@@ -172,17 +182,37 @@ export class HandScrollDetector {
         isScrolling: false,
         flickCount: 0,
         dominantAxis: "none",
+        handCount: 0,
+        handsInLowerZone: false,
       };
     }
 
-    // Lấy bàn tay chính (ưu tiên bàn tay đầu tiên có đủ khớp cổ tay, ngón cái, ngón trỏ)
-    const primaryHand = hands.find((h) => h[0] && h[4] && h[8]);
+    const validHands = hands.filter((h) => h[0] && h[4] && h[8]);
+    const handCount = hands.length;
+    const handsInLowerZone = hands.some(
+      (h) => Boolean(h[0]) && h[0].y >= this.lowerZoneMinWristY
+    );
+
+    // Bám theo đúng bàn tay đã theo dõi ở khung trước (cổ tay gần nhất),
+    // tránh việc thứ tự 2 bàn tay bị đảo giữa các khung tạo ra "nhịp vuốt" giả.
+    const prev = this.samples[this.samples.length - 1];
+    const primaryHand = prev
+      ? validHands.reduce<HandLandmarkPoint[] | undefined>((best, h) => {
+          if (!best) return h;
+          const dBest = Math.hypot(best[0].x - prev.wristX, best[0].y - prev.wristY);
+          const dCur = Math.hypot(h[0].x - prev.wristX, h[0].y - prev.wristY);
+          return dCur < dBest ? h : best;
+        }, undefined)
+      : validHands[0];
+
     if (!primaryHand) {
       return {
         hasHands: true,
         isScrolling: false,
         flickCount: 0,
         dominantAxis: "none",
+        handCount,
+        handsInLowerZone,
       };
     }
 
@@ -206,6 +236,8 @@ export class HandScrollDetector {
         isScrolling: false,
         flickCount: 0,
         dominantAxis: "none",
+        handCount,
+        handsInLowerZone,
       };
     }
 
@@ -222,6 +254,8 @@ export class HandScrollDetector {
         isScrolling: false,
         flickCount: 0,
         dominantAxis: "none",
+        handCount,
+        handsInLowerZone,
       };
     }
 
@@ -259,6 +293,8 @@ export class HandScrollDetector {
       isScrolling,
       flickCount: bestFlicks,
       dominantAxis,
+      handCount,
+      handsInLowerZone,
     };
   }
 }

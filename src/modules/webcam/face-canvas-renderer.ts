@@ -318,7 +318,11 @@ export function playTipTipTipAlert(
   if (typeof window === "undefined") return;
   const safeRepeats = Math.max(1, Math.min(3, Math.round(repeatCount)));
 
-  if (typeof window.Audio !== "function") {
+  const isJsdom =
+    typeof navigator !== "undefined" &&
+    /jsdom/i.test(navigator.userAgent ?? "");
+
+  if (typeof window.Audio !== "function" || isJsdom) {
     playSynthesizedTipTipTip(2400, 95, safeRepeats);
     return;
   }
