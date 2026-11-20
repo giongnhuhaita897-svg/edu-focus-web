@@ -13,7 +13,7 @@ export interface StudyFocusThresholds {
   eyeLookDownThreshold: number;
   /** Thời gian nhắm mắt hoặc gục đầu liên tục (ms) trước khi báo buồn ngủ */
   drowsyDurationMs: number;
-  /** Thời gian giãn cách giữa 2 lần cộng dồn cảnh báo buồn ngủ (ms) */
+  /** Khoảng nhắc lại (ms) trong cùng 1 đợt buồn ngủ kéo dài (mỗi đợt chỉ đếm 1 lần) */
   drowsyCooldownMs: number;
   /** Góc cúi đầu xuống (độ, pitch dương) để nhận diện tư thế gục đầu */
   headPitchDownThresholdDeg: number;
@@ -29,7 +29,7 @@ export interface StudyFocusThresholds {
   lookDownDistractionDurationMs: number;
   /** Thời gian không thấy khuôn mặt (ms) trước khi báo vắng mặt & tính 1 lần xao nhãng */
   absenceDurationMs: number;
-  /** Thời gian giãn cách giữa 2 lần cộng dồn số lần xao nhãng (ms) */
+  /** Khoảng nhắc lại (ms) trong cùng 1 đợt xao nhãng kéo dài (mỗi đợt chỉ đếm 1 lần) */
   distractionCooldownMs: number;
 
   // --- Nhận diện Điện thoại / iPad (ObjectDetector) ---
@@ -57,12 +57,11 @@ export interface StudyFocusThresholds {
   scrollingDurationMs: number;
 
   // --- Quy tắc Phạt Kỷ luật (Tự động kết thúc phiên & phạt về 0 phút) ---
-  /** Số lần xao nhãng tối đa cho phép; vượt quá (> 10, tức từ 11 lần) sẽ kết thúc phiên & phạt 0 phút */
+  /**
+   * Số đợt xao nhãng tối đa cho phép; vượt quá (> 10, tức từ 11 đợt) sẽ kết thúc phiên & phạt 0 phút.
+   * (Đã bỏ quy tắc phạt khi độ tập trung < 75%; % tập trung giờ chỉ để tham khảo.)
+   */
   maxDistractionsBeforePenalty: number;
-  /** Phần trăm tập trung tối thiểu; xuống dưới (< 75%) sẽ kết thúc phiên & phạt 0 phút */
-  minFocusScorePercentBeforePenalty: number;
-  /** Thời gian đệm khởi động đầu phiên (ms) trước khi áp dụng ngưỡng < 75% (tránh vừa mở cam đã bị phạt) */
-  penaltyMinTrackedMs: number;
 
   // --- Vòng lặp & Âm thanh ---
   /** Chu kỳ phân tích khuôn mặt (ms) — 120ms ~ 8 FPS */
@@ -77,35 +76,37 @@ export interface StudyFocusThresholds {
 }
 
 export const STUDY_FOCUS_THRESHOLDS: StudyFocusThresholds = {
-  eyeBlinkScoreThreshold: 0.52,
+  // Các ngưỡng góc/điểm mắt bên dưới được so với TƯ THẾ GỐC đã hiệu chỉnh của từng bạn
+  // (xem observer-thresholds.ts), nên có thể đặt nhạy hơn mà không bắt nhầm.
+  eyeBlinkScoreThreshold: 0.45,
   eyeAspectRatioThreshold: 0.21,
-  eyeLookDownThreshold: 0.55,
-  drowsyDurationMs: 1800,
+  eyeLookDownThreshold: 0.45,
+  drowsyDurationMs: 1500,
+  /** Trong 1 đợt buồn ngủ kéo dài: nhắc lại mỗi 6 giây (không cộng thêm lần đếm) */
   drowsyCooldownMs: 6000,
-  headPitchDownThresholdDeg: 22,
-  headPitchLookDownThresholdDeg: 12,
-  headYawDistractionDeg: 28,
-  headPitchDistractionDeg: 32,
-  distractionDurationMs: 3000,
-  lookDownDistractionDurationMs: 4500,
-  absenceDurationMs: 4000,
-  distractionCooldownMs: 5000,
+  headPitchDownThresholdDeg: 20,
+  headPitchLookDownThresholdDeg: 8,
+  headYawDistractionDeg: 25,
+  headPitchDistractionDeg: 26,
+  distractionDurationMs: 2200,
+  lookDownDistractionDurationMs: 3000,
+  absenceDurationMs: 3000,
+  /** Trong 1 đợt xao nhãng kéo dài: nhắc lại mỗi 8 giây (không cộng thêm lần đếm) */
+  distractionCooldownMs: 8000,
 
-  objectDetectionIntervalMs: 450,
-  phoneConfidenceThreshold: 0.38,
-  tabletScreenConfidenceThreshold: 0.52,
+  objectDetectionIntervalMs: 300,
+  phoneConfidenceThreshold: 0.3,
+  tabletScreenConfidenceThreshold: 0.45,
   minTabletBoxAreaRatio: 0.03,
-  deviceDistractionDurationMs: 2200,
+  deviceDistractionDurationMs: 1900,
 
-  handDetectionIntervalMs: 160,
-  scrollWindowMs: 2400,
-  scrollMinStepDelta: 0.024,
+  handDetectionIntervalMs: 120,
+  scrollWindowMs: 3000,
+  scrollMinStepDelta: 0.018,
   scrollMinFlickCount: 3,
-  scrollingDurationMs: 2800,
+  scrollingDurationMs: 2000,
 
   maxDistractionsBeforePenalty: 10,
-  minFocusScorePercentBeforePenalty: 75,
-  penaltyMinTrackedMs: 10000,
 
   detectionIntervalMs: 120,
   maxFrameDeltaMs: 1000,

@@ -41,6 +41,8 @@ import {
 } from "@/lib/storage/local-db";
 import { STUDY_FOCUS_THRESHOLDS } from "@/modules/webcam/thresholds";
 import {
+  describeDistractionReason,
+  describeDrowsyReason,
   extractFaceFrameMetrics,
   StudyFocusTracker,
   StudyTrackerSnapshot,
@@ -140,6 +142,7 @@ export function StudyFocusCameraPanel({
   const latestDevicesRef = useRef<DetectedDistractionDevice[]>([]);
   const latestHandsRef = useRef<HandLandmarkPoint[][]>([]);
   const latestHandScrollingRef = useRef<boolean>(false);
+  const latestHandsInLowerZoneRef = useRef<boolean>(false);
   const hasDrawnCanvasRef = useRef<boolean>(false);
 
   // Refs đồng bộ state mới nhất cho vòng lặp requestAnimationFrame
@@ -171,6 +174,7 @@ export function StudyFocusCameraPanel({
       latestDevicesRef.current = [];
       latestHandsRef.current = [];
       latestHandScrollingRef.current = false;
+      latestHandsInLowerZoneRef.current = false;
       handScrollDetectorRef.current.reset();
     }
   }, [enableDeviceAndHandDetection]);
@@ -329,7 +333,7 @@ export function StudyFocusCameraPanel({
       const lostMinutes = Math.floor(elapsedSeconds / 60);
       const reason =
         snap.penaltyReason ??
-        `Số lần xao nhãng vượt quá ${STUDY_FOCUS_THRESHOLDS.maxDistractionsBeforePenalty} hoặc độ tập trung dưới ${STUDY_FOCUS_THRESHOLDS.minFocusScorePercentBeforePenalty}%.`;
+        `Số lần xao nhãng vượt quá ${STUDY_FOCUS_THRESHOLDS.maxDistractionsBeforePenalty} (${snap.distractionCount} lần).`;
 
       setIsTimerRunning(false);
       stopCameraResources();
@@ -368,6 +372,7 @@ export function StudyFocusCameraPanel({
       latestDevicesRef.current = [];
       latestHandsRef.current = [];
       latestHandScrollingRef.current = false;
+      latestHandsInLowerZoneRef.current = false;
       setSnapshot(trackerRef.current.getSnapshot());
       setSecondsLeft(workMinutes * 60);
 
@@ -490,12 +495,13 @@ export function StudyFocusCameraPanel({
               nowMs
             );
             latestHandScrollingRef.current = scrollSnap.isScrolling;
+            latestHandsInLowerZoneRef.current = scrollSnap.handsInLowerZone;
           } catch {
             // Bỏ qua lỗi khung hình tạm thời của HandLandmarker
           }
         }
 
-        // 3. Phân tích khuôn mặt (hướng đầu, nhắm mắt, nhìn xuống)
+        // 3. Phân tích khuôn mặt (hướng đầu, nhắm mắt, nhìn xuống, ngáp, gật gù)
         const faceTs = Math.max(
           Math.round(nowMs),
           lastFaceTimestampRef.current + 1
@@ -513,6 +519,8 @@ export function StudyFocusCameraPanel({
           const nextSnap = trackerRef.current.processFrame(metrics, nowMs, {
             detectedDevices: latestDevicesRef.current,
             isHandScrolling: latestHandScrollingRef.current,
+            handsVisible: latestHandsRef.current.length > 0,
+            handsInLowerZone: latestHandsInLowerZoneRef.current,
             noteTakingMode: noteTakingModeRef.current,
             enableDeviceAndHandDetection: enableDeviceAndHandRef.current,
           });
@@ -535,7 +543,7 @@ export function StudyFocusCameraPanel({
             }
           );
 
-          // Kiểm tra điều kiện kỷ luật: xao nhãng > 10 HOẶC độ tập trung < 75% -> kết thúc phiên & phạt 0 phút
+          // Kiểm tra điều kiện kỷ luật: chỉ phạt khi số đợt xao nhãng > 10 (đã bỏ quy tắc phạt dưới 75%)
           if (nextSnap.shouldTerminateWithPenalty) {
             terminateSessionWithPenalty(nextSnap);
             return;
@@ -544,25 +552,30 @@ export function StudyFocusCameraPanel({
           if (nextSnap.justTriggeredAlert !== "none") {
             if (nextSnap.justTriggeredAlert === "drowsy") {
               setLiveAlertText(
-                "Phát hiện dấu hiệu buồn ngủ / gục đầu! Hãy ngồi thẳng lưng hoặc vươn vai nhẹ nhé."
+                `${describeDrowsyReason(nextSnap.drowsyReason)}! Hãy ngồi thẳng lưng, chớp mắt hoặc vươn vai nhẹ nhé.`
               );
             } else if (nextSnap.justTriggeredAlert === "phone_distracted") {
               const detectedLabel =
                 nextSnap.activeDevices[0]?.label ?? "Điện thoại / iPad";
+              const reasonPrefix =
+                nextSnap.distractionReason &&
+                nextSnap.distractionReason !== "device"
+                  ? `${describeDistractionReason(nextSnap.distractionReason)}! `
+                  : `Phát hiện ${detectedLabel} trong khung hình! `;
               setLiveAlertText(
-                `Phát hiện ${detectedLabel} trong khung hình! Hãy cất thiết bị sang một bên để giữ mạch tập trung nhé.`
+                `${reasonPrefix}Hãy cất thiết bị sang một bên để giữ mạch tập trung nhé.`
               );
             } else if (nextSnap.justTriggeredAlert === "scrolling_distracted") {
               setLiveAlertText(
-                "Phát hiện cử chỉ tay đang lướt liên tục! Hãy tạm gác màn hình phụ để hoàn thành phiên Pomodoro này nhé."
+                "Ngón tay bạn đang lướt liên tục! Hãy tạm gác màn hình phụ để hoàn thành phiên Pomodoro này nhé."
               );
             } else if (nextSnap.justTriggeredAlert === "distracted") {
               setLiveAlertText(
-                "Bạn đang quay mặt hoặc nhìn xuống khá lâu. Nếu đang viết vở, hãy bật nút 'Đang ghi chép vở' để tránh nhắc nhầm nhé!"
+                `${describeDistractionReason(nextSnap.distractionReason)}. Nếu đang viết vở, hãy bật nút 'Đang ghi chép vở' để tránh nhắc nhầm nhé!`
               );
             } else if (nextSnap.justTriggeredAlert === "absent") {
               setLiveAlertText(
-                "Không thấy bạn trước bàn học. Hệ thống tạm ghi nhận 1 lần gián đoạn."
+                "Không thấy bạn trước bàn học. Hệ thống tạm ghi nhận 1 đợt gián đoạn."
               );
             }
 
@@ -693,6 +706,7 @@ export function StudyFocusCameraPanel({
       latestDevicesRef.current = [];
       latestHandsRef.current = [];
       latestHandScrollingRef.current = false;
+      latestHandsInLowerZoneRef.current = false;
       handScrollDetectorRef.current.reset();
       runDetectionLoop();
     } catch (err) {
@@ -1043,6 +1057,42 @@ export function StudyFocusCameraPanel({
           </div>
         </div>
 
+        {/* Góc nhìn Người bạn đồng hành quan sát (Human-like Observer Note) */}
+        <div
+          data-testid="study-observer-note"
+          className={`flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border text-xs transition-colors ${
+            snapshot.attentionLevel === "alert"
+              ? "bg-red-50/90 border-red-200 text-red-800"
+              : snapshot.attentionLevel === "watching"
+              ? "bg-amber-50/90 border-amber-200 text-amber-800"
+              : "bg-blue-50/60 border-blue-200/80 text-edtech-text"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                snapshot.attentionLevel === "alert"
+                  ? "bg-red-500 animate-ping"
+                  : snapshot.attentionLevel === "watching"
+                  ? "bg-amber-500 animate-pulse"
+                  : "bg-edtech-success"
+              }`}
+              aria-hidden="true"
+            />
+            <span className="font-bold text-edtech-primary">
+              Người bạn đồng hành:
+            </span>
+            <span className="font-medium">{snapshot.observerNote}</span>
+          </div>
+          {isCameraActive && (
+            <span className="text-[11px] font-semibold text-edtech-muted">
+              {snapshot.isCalibrated
+                ? "Đã quen tư thế ngồi của bạn ✓"
+                : "Đang làm quen tư thế ngồi…"}
+            </span>
+          )}
+        </div>
+
         {/* Chọn thiết bị Camera (ưu tiên webcam laptop, tránh Windows Phone Link / điện thoại) */}
         {availableCameras.length > 0 && (
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-xl bg-edtech-bg border border-edtech-border">
@@ -1349,18 +1399,15 @@ export function StudyFocusCameraPanel({
                 aria-hidden={true}
               />
               <p className="text-xs text-edtech-text leading-relaxed">
-                <strong>Quy tắc Kỷ luật:</strong> Nếu số lần xao nhãng{" "}
+                <strong>Quy tắc Kỷ luật:</strong> Nếu số đợt xao nhãng{" "}
                 <strong>
                   vượt quá {STUDY_FOCUS_THRESHOLDS.maxDistractionsBeforePenalty}
                 </strong>{" "}
-                hoặc độ tập trung{" "}
-                <strong>
-                  dưới{" "}
-                  {STUDY_FOCUS_THRESHOLDS.minFocusScorePercentBeforePenalty}%
-                </strong>{" "}
-                (một trong hai hoặc cả hai), phiên học sẽ tự động kết thúc và{" "}
+                (tức từ {STUDY_FOCUS_THRESHOLDS.maxDistractionsBeforePenalty + 1} đợt),
+                phiên học sẽ tự động kết thúc và{" "}
                 <strong>phạt về 0 phút tích lũy</strong> kèm chuông báo típ típ
-                típ.
+                típ. Tỷ lệ % tập trung được giữ để bạn theo dõi tiến bộ,{" "}
+                <strong>không bị phạt làm lại khi tụt dưới 75%</strong>.
               </p>
             </div>
 

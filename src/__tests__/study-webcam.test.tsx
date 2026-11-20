@@ -419,40 +419,45 @@ describe("Webcam AI — Tab Giám sát Ngồi học & Tập trung (FaceLandmarke
     expect(deviceToggle).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("kích hoạt phạt kết thúc phiên & đặt 0 phút tích lũy khi xao nhãng > 10 HOẶC độ tập trung < 75% (hoặc cả hai)", () => {
-    // 1. Đúng ngưỡng an toàn (10 lần, 75%) -> chưa phạt
-    const safeEval = evaluateStudyPenalty(10, 75, 20000);
+  it("chỉ phạt kết thúc phiên & đặt 0 phút tích lũy khi số đợt xao nhãng > 10 (đã bỏ quy tắc phạt dưới 75%)", () => {
+    // 1. Đúng ngưỡng an toàn (10 đợt) -> chưa phạt
+    const safeEval = evaluateStudyPenalty(10);
     expect(safeEval.shouldTerminateWithPenalty).toBe(false);
+    expect(safeEval.tooManyDistractions).toBe(false);
+    expect(safeEval.penaltyReason).toBeNull();
 
-    // 2. Chỉ vi phạm xao nhãng > 10 (11 lần, 88%) -> phạt
-    const onlyDistractions = evaluateStudyPenalty(11, 88, 20000);
-    expect(onlyDistractions.shouldTerminateWithPenalty).toBe(true);
-    expect(onlyDistractions.tooManyDistractions).toBe(true);
-    expect(onlyDistractions.lowFocusScore).toBe(false);
+    // 2. Độ tập trung tụt xuống dưới 75% (nhưng số đợt xao nhãng <= 10) -> KHÔNG bị phạt làm lại
+    const tracker = new StudyFocusTracker(STUDY_FOCUS_THRESHOLDS);
+    const absentMetrics = {
+      hasFace: false,
+      eyeClosureScore: 0,
+      yawDeg: 0,
+      pitchDeg: 0,
+      rollDeg: 0,
+    };
+    let snap = tracker.processFrame(absentMetrics, 0);
+    for (let t = 1000; t <= 15000; t += 1000) {
+      snap = tracker.processFrame(absentMetrics, t);
+    }
+    expect(snap.focusScorePercent).toBeLessThan(75);
+    expect(snap.distractionCount).toBe(1); // 1 đợt vắng mặt liên tục chỉ đếm 1 đợt
+    expect(snap.shouldTerminateWithPenalty).toBe(false);
 
-    // 3. Chỉ vi phạm tập trung < 75% (3 lần, 74%, đã qua thời gian đệm) -> phạt
-    const onlyLowFocus = evaluateStudyPenalty(3, 74, 20000);
-    expect(onlyLowFocus.shouldTerminateWithPenalty).toBe(true);
-    expect(onlyLowFocus.tooManyDistractions).toBe(false);
-    expect(onlyLowFocus.lowFocusScore).toBe(true);
+    // 3. Vi phạm xao nhãng > 10 (11 đợt) -> phạt về 0 phút
+    const penaltyEval = evaluateStudyPenalty(11);
+    expect(penaltyEval.shouldTerminateWithPenalty).toBe(true);
+    expect(penaltyEval.tooManyDistractions).toBe(true);
+    expect(penaltyEval.penaltyReason).toMatch(/vượt quá 10/i);
 
-    // 4. Vi phạm cả hai (12 lần, 68%) -> phạt và nêu rõ cả 2 lý do
-    const bothTriggered = evaluateStudyPenalty(12, 68, 20000);
-    expect(bothTriggered.shouldTerminateWithPenalty).toBe(true);
-    expect(bothTriggered.tooManyDistractions).toBe(true);
-    expect(bothTriggered.lowFocusScore).toBe(true);
-    expect(bothTriggered.penaltyReason).toMatch(/vượt quá 10/i);
-    expect(bothTriggered.penaltyReason).toMatch(/dưới 75%/i);
-
-    // 5. Ghi nhận phiên phạt vào local-db: durationMinutes = 0 và KHÔNG cộng phút vào mục tiêu
+    // 4. Ghi nhận phiên phạt vào local-db: durationMinutes = 0 và KHÔNG cộng phút vào mục tiêu
     const beforeState = createDefaultState();
     const beforeGoalHours = beforeState.goals[0].completedHours;
     const afterPenalty = recordPenalizedStudySessionInState(beforeState, {
       presetId: "25_5",
       focusScorePercent: 68,
-      distractionCount: 12,
+      distractionCount: 11,
       drowsinessAlertCount: 1,
-      penaltyReason: bothTriggered.penaltyReason!,
+      penaltyReason: penaltyEval.penaltyReason!,
     });
 
     expect(afterPenalty.goals[0].completedHours).toBe(beforeGoalHours);
@@ -460,11 +465,80 @@ describe("Webcam AI — Tab Giám sát Ngồi học & Tập trung (FaceLandmarke
       afterPenalty.focusSessions[afterPenalty.focusSessions.length - 1];
     expect(saved.durationMinutes).toBe(0);
     expect(saved.penalized).toBe(true);
-    expect(saved.distractionCount).toBe(12);
+    expect(saved.distractionCount).toBe(11);
     expect(saved.focusScorePercent).toBe(68);
   });
 
-  it("hiển thị nút nghe thử tiếng típ típ và đường dẫn âm thanh chuẩn", () => {
+  it("quan sát kiểu 'người quan sát người': nhận diện ngủ gật tinh tế (chớp mắt chậm, gật gù, gục hẳn xuống bàn) và bấm điện thoại dưới bàn", () => {
+    const tracker = new StudyFocusTracker(STUDY_FOCUS_THRESHOLDS);
+    const calmFace = {
+      hasFace: true,
+      eyeClosureScore: 0.08,
+      eyeLookDownScore: 0.05,
+      jawOpenScore: 0.05,
+      yawDeg: 0,
+      pitchDeg: 0,
+      rollDeg: 0,
+    };
+
+    // 1. Làm quen tư thế ngồi bình thường trong 2 giây
+    for (let t = 0; t <= 2000; t += 500) {
+      tracker.processFrame(calmFace, t);
+    }
+    expect(tracker.getSnapshot().isCalibrated).toBe(true);
+
+    // 2. Ba lần chớp mắt chậm (díp mắt 600ms mỗi lần) -> nhận ra đang buồn ngủ (long_blinks)
+    let now = 2500;
+    for (let i = 0; i < 3; i++) {
+      tracker.processFrame({ ...calmFace, eyeClosureScore: 0.75 }, now);
+      now += 650;
+      tracker.processFrame(calmFace, now);
+      now += 400;
+    }
+    let snap = tracker.getSnapshot();
+    expect(snap.status).toBe("drowsy");
+    expect(snap.drowsyReason).toBe("long_blinks");
+    expect(snap.drowsinessAlertCount).toBe(1);
+
+    // 3. Đang buồn ngủ rồi gục hẳn đầu xuống bàn (camera mất dấu khuôn mặt) -> vẫn giữ trạng thái buồn ngủ (face_down_desk), không báo nhầm vắng mặt
+    for (let dt = 500; dt <= 4000; dt += 500) {
+      snap = tracker.processFrame(
+        {
+          hasFace: false,
+          eyeClosureScore: 0,
+          yawDeg: 0,
+          pitchDeg: 0,
+          rollDeg: 0,
+        },
+        now + dt
+      );
+    }
+    expect(snap.status).toBe("drowsy");
+    expect(snap.drowsyReason).toBe("face_down_desk");
+
+    // 4. Ngồi dậy tập trung lại, sau đó cúi nhìn xuống kèm đặt tay thấp dưới bàn (bấm điện thoại dưới gầm bàn dù camera không thấy chiếc ĐT)
+    now += 5000;
+    for (let dt = 0; dt <= 3000; dt += 500) {
+      tracker.processFrame(calmFace, now + dt);
+    }
+    now += 3500;
+    const underDeskPhoneFace = {
+      ...calmFace,
+      eyeLookDownScore: 0.68,
+      pitchDeg: 15,
+    };
+    for (let dt = 0; dt <= 2400; dt += 400) {
+      snap = tracker.processFrame(underDeskPhoneFace, now + dt, {
+        handsVisible: true,
+        handsInLowerZone: true,
+      });
+    }
+    expect(snap.status).toBe("phone_distracted");
+    expect(snap.distractionReason).toBe("phone_posture");
+    expect(snap.observerNote).toMatch(/bấm điện thoại/i);
+  });
+
+  it("hiển thị nút nghe thử tiếng típ típ, lời nhận xét của Người bạn đồng hành và quy tắc không phạt dưới 75%", () => {
     expect(STUDY_FOCUS_THRESHOLDS.alertBeepAudioPath).toBe(
       "/sounds/tip-tip-tip.mp3"
     );
@@ -472,5 +546,12 @@ describe("Webcam AI — Tab Giám sát Ngồi học & Tập trung (FaceLandmarke
     const testSoundBtn = screen.getByTestId("test-tip-sound-btn");
     expect(testSoundBtn).toBeInTheDocument();
     fireEvent.click(testSoundBtn);
+
+    expect(screen.getByTestId("study-observer-note")).toHaveTextContent(
+      /Người bạn đồng hành/i
+    );
+    expect(
+      screen.getByText(/không bị phạt làm lại khi tụt dưới 75%/i)
+    ).toBeInTheDocument();
   });
 });
