@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 import {
   Sparkles,
   Target,
@@ -45,7 +46,15 @@ export function AIMentorPlaceholder() {
   const [promptInput, setPromptInput] = useState<string>("");
   const [appliedKeys, setAppliedKeys] = useState<Record<string, boolean>>({});
   const [statusNotice, setStatusNotice] = useState<string>("");
+  const [isSending, setIsSending] = useState<boolean>(false);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const chatListRef = useRef<HTMLDivElement | null>(null);
+  const [sessionStart] = useState<string>(() => new Date().toISOString());
+  const [restored, setRestored] = useState<AIMessage[]>([]);
+  const chatMessages: AIMessage[] = [
+    ...restored,
+    ...state.aiMessages.filter((m) => m.createdAt >= sessionStart),
+  ];
 
   useEffect(() => {
     const refresh = () => setState(loadAppState());
@@ -53,6 +62,10 @@ export function AIMentorPlaceholder() {
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
     return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
+  useEffect(() => {
+    const el = chatListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chatMessages.length, isSending]);
 
   const syncWithServer = (nextState: AppDatabaseState) => {
     setState(nextState);
@@ -95,9 +108,9 @@ export function AIMentorPlaceholder() {
     );
   };
 
-  const handleSendPrompt = (rawText: string) => {
+   const handleSendPrompt = async (rawText: string) => {
     const trimmed = rawText.trim();
-    if (!trimmed) return;
+    if (!trimmed || isSending) return;
 
     const userMsg: AIMessage = {
       id: `msg-user-${Date.now()}`,
@@ -107,11 +120,29 @@ export function AIMentorPlaceholder() {
     };
 
     const withUser = appendAIMessageToState(state, userMsg);
-    const aiReply = generateMentorResponse(withUser, trimmed);
-    const withReply = appendAIMessageToState(withUser, aiReply);
-
-    syncWithServer(withReply);
+    syncWithServer(withUser);
     setPromptInput("");
+    setIsSending(true);
+
+    let aiReply: AIMessage;
+    try {
+      const res = await fetch("/api/ai-mentor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: trimmed, state: withUser }),
+      });
+      if (!res.ok) throw new Error("AI mentor request failed");
+      const data = (await res.json()) as { message?: AIMessage };
+      if (!data.message) throw new Error("Empty AI mentor response");
+      aiReply = data.message;
+    } catch {
+      // Mất mạng hoặc lỗi server: dùng bộ máy cục bộ để web không bao giờ chết
+      aiReply = generateMentorResponse(withUser, trimmed);
+    }
+
+    const withReply = appendAIMessageToState(withUser, aiReply);
+    syncWithServer(withReply);
+    setIsSending(false);
   };
 
   const handleSubmitForm = (e: React.FormEvent<HTMLFormElement>) => {
@@ -421,6 +452,7 @@ export function AIMentorPlaceholder() {
                   key={q}
                   type="button"
                   onClick={() => handleSendPrompt(q)}
+                  disabled={isSending}
                   className="px-3 py-1.5 rounded-xl bg-blue-50/80 hover:bg-blue-100 text-edtech-primary text-xs font-semibold border border-blue-200 transition-colors text-left"
                 >
                   {q}
@@ -430,10 +462,11 @@ export function AIMentorPlaceholder() {
 
             {/* Lịch sử tin nhắn */}
             <div
+              ref={chatListRef}
               data-testid="ai-mentor-chat-list"
               className="space-y-3 max-h-[420px] overflow-y-auto pr-1"
             >
-              {state.aiMessages.map((msg) => {
+              {chatMessages.map((msg) => {
                 const isAssistant = msg.role === "assistant";
                 return (
                   <div
@@ -461,9 +494,11 @@ export function AIMentorPlaceholder() {
                       </span>
                     </div>
 
-                    <p className="text-sm leading-relaxed whitespace-pre-line">
-                      {msg.content}
-                    </p>
+                      <div className="text-sm leading-relaxed [&_p]:mb-2 [&_p:last-child]:mb-0 [&_strong]:font-bold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-1">
+                      <ReactMarkdown>
+                        {msg.content.replace(/\n/g, "  \n")}
+                      </ReactMarkdown>
+                    </div>
 
                     {isAssistant &&
                       msg.suggestedActions &&
@@ -508,6 +543,14 @@ export function AIMentorPlaceholder() {
                   </div>
                 );
               })}
+              {isSending && (
+                <p
+                  role="status"
+                  className="p-3 rounded-2xl bg-edtech-bg border border-edtech-border text-xs font-semibold text-edtech-muted animate-pulse"
+                >
+                  Cố vấn AI đang phân tích...
+                </p>
+              )}
             </div>
           </div>
 
@@ -543,13 +586,14 @@ export function AIMentorPlaceholder() {
               </span>
               <button
                 type="submit"
+                disabled={isSending}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-edtech-primary hover:bg-edtech-primaryHover text-white text-sm font-bold shadow-sm transition-colors"
               >
                 <Send className="w-4 h-4" aria-hidden={true} />
                 <span>Gửi tới Cố vấn AI</span>
               </button>
             </div>
-          </form>
+           </form>
         </section>
       </div>
     </div>

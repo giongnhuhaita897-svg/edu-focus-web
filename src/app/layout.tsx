@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/layout/AppShell";
-import ChatBox from "@/components/chat-box";
 
 export const metadata: Metadata = {
   title: "EduFocus AI — Lịch trình, Kỷ luật Webcam & Cố vấn Học tập",
@@ -18,7 +17,6 @@ export default function RootLayout({
     <html lang="vi">
       <body className="antialiased">
         <AppShell>{children}</AppShell>
-        <ChatBox />
       </body>
     </html>
   );
