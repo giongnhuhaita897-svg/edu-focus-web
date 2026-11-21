@@ -20,6 +20,7 @@ import {
   createDefaultState,
   formatHoursAndMinutes,
   loadAppState,
+  saveAppState,
   STATE_CHANGE_EVENT,
 } from "@/lib/storage/local-db";
 import {
@@ -58,14 +59,9 @@ export function AIMentorPlaceholder() {
   const [isSending, setIsSending] = useState<boolean>(false);
   const formRef = useRef<HTMLFormElement | null>(null);
   const chatListRef = useRef<HTMLDivElement | null>(null);
-  const [sessionStart] = useState<string>(() => new Date().toISOString());
-  const [restored, setRestored] = useState<AIMessage[]>([]);
   const [savedChats, setSavedChats] = useState<SavedChat[]>([]);
   const [showHistory, setShowHistory] = useState<boolean>(false);
-  const chatMessages: AIMessage[] = [
-    ...restored,
-    ...state.aiMessages.filter((m) => m.createdAt >= sessionStart),
-  ];
+  const chatMessages: AIMessage[] = state.aiMessages;
 
   useEffect(() => {
     const refresh = () => setState(loadAppState());
@@ -78,7 +74,7 @@ export function AIMentorPlaceholder() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [chatMessages.length, isSending]);
 
-    useEffect(() => {
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem(SAVED_CHATS_KEY);
       const parsed: unknown = raw ? JSON.parse(raw) : [];
@@ -106,10 +102,13 @@ export function AIMentorPlaceholder() {
   const getActionKey = (action: SuggestedScheduleAction) =>
     `${action.date}-${action.startTime}-${action.title}`;
 
-  const isActionAlreadyInSchedule = (action: SuggestedScheduleAction) => {
+  const isActionAlreadyInSchedule = (
+    action: SuggestedScheduleAction,
+    targetState: AppDatabaseState = state
+  ) => {
     const key = getActionKey(action);
     if (appliedKeys[key]) return true;
-    return state.scheduleEvents.some(
+    return targetState.scheduleEvents.some(
       (evt) =>
         evt.date === action.date &&
         evt.startTime === action.startTime &&
@@ -118,8 +117,9 @@ export function AIMentorPlaceholder() {
   };
 
   const handleApplySuggestion = (action: SuggestedScheduleAction) => {
-    if (isActionAlreadyInSchedule(action)) return;
-    const next = applySuggestedActionToState(state, action);
+    const latestState = loadAppState();
+    if (isActionAlreadyInSchedule(action, latestState)) return;
+    const next = applySuggestedActionToState(latestState, action);
     syncWithServer(next);
     const key = getActionKey(action);
     setAppliedKeys((prev) => ({ ...prev, [key]: true }));
@@ -128,7 +128,7 @@ export function AIMentorPlaceholder() {
     );
   };
 
-   const persistSavedChats = (next: SavedChat[]) => {
+  const persistSavedChats = (next: SavedChat[]) => {
     setSavedChats(next);
     try {
       window.localStorage.setItem(SAVED_CHATS_KEY, JSON.stringify(next));
@@ -141,47 +141,75 @@ export function AIMentorPlaceholder() {
     if (chatMessages.length === 0) return;
     const firstUser = chatMessages.find((m) => m.role === "user");
     const rawTitle = (firstUser?.content ?? "Cuộc trò chuyện").trim();
-     const defaultTitle =
-       rawTitle.length > 50 ? `${rawTitle.slice(0, 50)}…` : rawTitle;
-    const input = window.prompt("Đặt tên cho cuộc trò chuyện:", defaultTitle);
+    const defaultTitle =
+      rawTitle.length > 50 ? `${rawTitle.slice(0, 50)}…` : rawTitle;
+    const input =
+      typeof window !== "undefined" && typeof window.prompt === "function"
+        ? window.prompt("Đặt tên cho cuộc trò chuyện:", defaultTitle)
+        : defaultTitle;
     if (input === null) return;
     const title = input.trim().slice(0, 60) || defaultTitle;
     const entry: SavedChat = {
       id: `chat-${Date.now()}`,
       title,
       savedAt: new Date().toISOString(),
-      messages: chatMessages,
+      messages: [...chatMessages],
     };
     persistSavedChats([entry, ...savedChats].slice(0, MAX_SAVED_CHATS));
     setStatusNotice("Đã lưu cuộc trò chuyện vào lịch sử.");
   };
 
   const handleOpenSavedChat = (chat: SavedChat) => {
-    const currentIds = new Set(
-      state.aiMessages
-        .filter((m) => m.createdAt >= sessionStart)
-        .map((m) => m.id)
-    );
-    setRestored(chat.messages.filter((m) => !currentIds.has(m.id)));
+    const latestState = loadAppState();
+    const nextState = saveAppState({
+      ...latestState,
+      aiMessages: [...chat.messages],
+    });
+    syncWithServer(nextState);
     setShowHistory(false);
     setStatusNotice(`Đã mở lại: "${chat.title}"`);
+  };
+
+  const handleStartNewChat = () => {
+    const latestState = loadAppState();
+    const welcomeMsg: AIMessage = {
+      id: `msg-welcome-${Date.now()}`,
+      role: "assistant",
+      content:
+        "Thầy/Cô đã mở phiên trò chuyện mới! Cậu muốn hỏi bài, thảo luận lộ trình hay tạo kế hoạch học tập cho khung giờ nào hôm nay?",
+      createdAt: new Date().toISOString(),
+    };
+    const nextState = saveAppState({
+      ...latestState,
+      aiMessages: [welcomeMsg],
+    });
+    syncWithServer(nextState);
+    setShowHistory(false);
+    setStatusNotice("Đã bắt đầu cuộc trò chuyện mới.");
   };
 
   const handleDeleteSavedChat = (id: string) => {
     persistSavedChats(savedChats.filter((c) => c.id !== id));
   };
+
   const handleSendPrompt = async (rawText: string) => {
     const trimmed = rawText.trim();
     if (!trimmed || isSending) return;
 
+    const latestBeforeSend = loadAppState();
+    const historyTurns = latestBeforeSend.aiMessages.slice(-10).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
     const userMsg: AIMessage = {
-      id: `msg-user-${Date.now()}`,
+      id: `msg-user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       role: "user",
       content: trimmed,
       createdAt: new Date().toISOString(),
     };
 
-    const withUser = appendAIMessageToState(state, userMsg);
+    const withUser = appendAIMessageToState(latestBeforeSend, userMsg);
     syncWithServer(withUser);
     setPromptInput("");
     setIsSending(true);
@@ -191,18 +219,25 @@ export function AIMentorPlaceholder() {
       const res = await fetch("/api/ai-mentor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed, state: withUser }),
+        body: JSON.stringify({
+          prompt: trimmed,
+          state: withUser,
+          history: historyTurns,
+        }),
       });
       if (!res.ok) throw new Error("AI mentor request failed");
       const data = (await res.json()) as { message?: AIMessage };
       if (!data.message) throw new Error("Empty AI mentor response");
       aiReply = data.message;
     } catch {
-      // Mất mạng hoặc lỗi server: dùng bộ máy cục bộ để web không bao giờ chết
-      aiReply = generateMentorResponse(withUser, trimmed);
+      // Mất mạng hoặc lỗi server: đọc state mới nhất để tránh ghi đè lịch người dùng vừa thêm
+      const latestForFallback = loadAppState();
+      aiReply = generateMentorResponse(latestForFallback, trimmed);
     }
 
-    const withReply = appendAIMessageToState(withUser, aiReply);
+    // Luôn lấy state mới nhất từ localStorage trước khi nối câu trả lời của AI (tránh Race Condition)
+    const latestAfterReply = loadAppState();
+    const withReply = appendAIMessageToState(latestAfterReply, aiReply);
     syncWithServer(withReply);
     setIsSending(false);
   };
@@ -522,6 +557,14 @@ export function AIMentorPlaceholder() {
               ))}
             </div>
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleStartNewChat}
+                disabled={isSending}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-edtech-primary text-xs font-semibold border border-blue-200 transition-colors disabled:opacity-50"
+              >
+                Cuộc trò chuyện mới
+              </button>
               <button
                 type="button"
                 onClick={handleSaveChat}

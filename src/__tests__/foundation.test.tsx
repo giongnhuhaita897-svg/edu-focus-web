@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   addGoalToState,
@@ -20,6 +20,7 @@ import {
 import {
   analyzeStudentProgress,
   generateSmartScheduleSuggestions,
+  parseCustomScheduleFromPrompt,
 } from "@/modules/ai-tutor/ai-engine";
 import { Sidebar } from "@/components/layout/Sidebar";
 import DashboardPage from "@/app/page";
@@ -329,7 +330,7 @@ describe("Phiên bản v1.1+ — Hệ sinh thái Kỷ luật Tự học, Trạng
     ).toBeGreaterThanOrEqual(1);
   });
 
-  it("Giai đoạn 3: phân tích định mức Pomodoro mỗi ngày, đề xuất khung giờ trống và áp dụng 1-click vào lịch trình", () => {
+  it("Giai đoạn 3: phân tích định mức Pomodoro mỗi ngày, đề xuất khung giờ trống và áp dụng 1-click vào lịch trình", async () => {
     const state = createDefaultState();
     const analysis = analyzeStudentProgress(state, "2026-11-18");
 
@@ -370,10 +371,12 @@ describe("Phiên bản v1.1+ — Hệ sinh thái Kỷ luật Tự học, Trạng
     const sendBtn = screen.getByRole("button", { name: /Gửi tới Cố vấn AI/i });
     fireEvent.click(sendBtn);
 
-    const afterChatState = loadAppState();
-    expect(afterChatState.aiMessages.length).toBeGreaterThan(
-      state.aiMessages.length
-    );
+    await waitFor(() => {
+      const afterChatState = loadAppState();
+      expect(afterChatState.aiMessages.length).toBeGreaterThanOrEqual(
+        state.aiMessages.length + 2
+      );
+    });
   });
 
   it("API nội bộ /api/state và /api/ai-mentor hoạt động ổn định", async () => {
@@ -397,8 +400,9 @@ describe("Phiên bản v1.1+ — Hệ sinh thái Kỷ luật Tự học, Trạng
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt: "Đánh giá tiến độ mục tiêu của tớ",
+        prompt: "Tạo kế hoạch học Giải tích 1 từ 20:00 đến 21:00 hôm nay",
         state: nextState,
+        history: [{ role: "user", content: "Chào thầy cô" }],
       }),
     });
     const aiRes = await postAIMentor(aiReq);
@@ -406,5 +410,83 @@ describe("Phiên bản v1.1+ — Hệ sinh thái Kỷ luật Tự học, Trạng
     const aiData = await aiRes.json();
     expect(aiData.message.role).toBe("assistant");
     expect(Array.isArray(aiData.message.suggestedActions)).toBe(true);
+    expect(
+      aiData.message.suggestedActions.some(
+        (act: { startTime: string; endTime: string }) =>
+          act.startTime === "20:00" && act.endTime === "21:00"
+      )
+    ).toBe(true);
+  });
+
+  it("Khung chat AI Mentor: tạo kế hoạch theo giờ yêu cầu trong chat, giữ tin nhắn khi chuyển tab, lưu/mở lịch sử chuẩn xác và không ghi đè lịch trình", async () => {
+    const state = createDefaultState();
+    const customPlans = parseCustomScheduleFromPrompt(
+      state,
+      "Tạo kế hoạch ôn IELTS từ 20:00 đến 21:15 tối nay",
+      "2026-11-21"
+    );
+    expect(customPlans).toHaveLength(1);
+    expect(customPlans[0].startTime).toBe("20:00");
+    expect(customPlans[0].endTime).toBe("21:15");
+    expect(customPlans[0].goalId).toBe("goal-ielts");
+
+    const promptSpy = vi
+      .spyOn(window, "prompt")
+      .mockReturnValue("Kế hoạch tối nay");
+
+    const { unmount } = render(<AIMentorPlaceholder />);
+
+    // 1. Lời chào mở đầu hiển thị ngay khi mở trang (không bị ẩn bởi sessionStart)
+    expect(
+      screen.getByText(/Chào Mây! Hôm nay cậu đã hoàn thành xuất sắc/i)
+    ).toBeInTheDocument();
+
+    // 2. Gửi yêu cầu tạo kế hoạch học tập trực tiếp trong khung chat
+    const chatInput = screen.getByLabelText(
+      /Đặt câu hỏi hoặc yêu cầu Cố vấn AI/i
+    );
+    fireEvent.change(chatInput, {
+      target: { value: "Tạo kế hoạch ôn IELTS từ 20:00 đến 21:15 hôm nay" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Gửi tới Cố vấn AI/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/20:00 - 21:15/i).length
+      ).toBeGreaterThanOrEqual(1);
+    });
+
+    // 3. Lưu cuộc trò chuyện, bắt đầu cuộc trò chuyện mới, rồi mở lại bản đã lưu (không bị trộn tin nhắn)
+    fireEvent.click(
+      screen.getByRole("button", { name: /Lưu cuộc trò chuyện/i })
+    );
+    expect(
+      screen.getByText(/Đã lưu cuộc trò chuyện vào lịch sử/i)
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Cuộc trò chuyện mới/i })
+    );
+    expect(
+      screen.queryByText(/Tạo kế hoạch ôn IELTS từ 20:00 đến 21:15 hôm nay/i)
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Lịch sử đã lưu \(1\)/i })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Mở" }));
+
+    expect(
+      screen.getByText(/Tạo kế hoạch ôn IELTS từ 20:00 đến 21:15 hôm nay/i)
+    ).toBeInTheDocument();
+
+    // 4. Khi chuyển tab (unmount và mount lại), cuộc trò chuyện vẫn được giữ nguyên
+    unmount();
+    render(<AIMentorPlaceholder />);
+    expect(
+      screen.getByText(/Tạo kế hoạch ôn IELTS từ 20:00 đến 21:15 hôm nay/i)
+    ).toBeInTheDocument();
+
+    promptSpy.mockRestore();
   });
 });

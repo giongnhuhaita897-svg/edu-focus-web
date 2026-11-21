@@ -6,6 +6,7 @@ import {
   AIMessage,
   AppDatabaseState,
   Goal,
+  ScheduleEventType,
   SuggestedScheduleAction,
 } from "@/types/database";
 
@@ -197,6 +198,207 @@ export function generateSmartScheduleSuggestions(
   return suggestions;
 }
 
+function formatHHMM(totalMinutes: number): string {
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, totalMinutes));
+  const h = Math.floor(clamped / 60);
+  const m = clamped % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function inferScheduleTypeFromPrompt(normalizedPrompt: string): ScheduleEventType {
+  if (
+    normalizedPrompt.includes("vận động") ||
+    normalizedPrompt.includes("thể dục") ||
+    normalizedPrompt.includes("giãn cơ") ||
+    normalizedPrompt.includes("giơ tay") ||
+    normalizedPrompt.includes("squat")
+  ) {
+    return "exercise";
+  }
+  if (
+    normalizedPrompt.includes("ôn tập") ||
+    normalizedPrompt.includes("ôn thi") ||
+    normalizedPrompt.includes("tổng kết") ||
+    normalizedPrompt.includes("củng cố")
+  ) {
+    return "review";
+  }
+  return "study";
+}
+
+function findMatchingGoal(state: AppDatabaseState, prompt: string): Goal | undefined {
+  const normalized = prompt.toLowerCase();
+  for (const goal of state.goals) {
+    const titleLower = goal.title.toLowerCase();
+    if (normalized.includes(titleLower)) return goal;
+    const words = titleLower
+      .split(/[\s,()&/-]+/)
+      .filter((w) => w.length >= 4);
+    if (words.some((w) => normalized.includes(w))) {
+      return goal;
+    }
+  }
+  if (normalized.includes("ielts") || normalized.includes("tiếng anh")) {
+    return state.goals.find((g) => g.title.toLowerCase().includes("ielts"));
+  }
+  if (
+    normalized.includes("cấu trúc dữ liệu") ||
+    normalized.includes("giải thuật") ||
+    normalized.includes("dsa") ||
+    normalized.includes("đồ thị")
+  ) {
+    return state.goals.find(
+      (g) =>
+        g.title.toLowerCase().includes("cấu trúc dữ liệu") ||
+        g.title.toLowerCase().includes("giải thuật")
+    );
+  }
+  return undefined;
+}
+
+function extractCustomPlanTitle(
+  prompt: string,
+  matchedGoal: Goal | undefined,
+  eventType: ScheduleEventType
+): string {
+  const cleaned = prompt
+    .replace(
+      /\b(\d{1,2})(?::|h)(\d{2})?\s*(?:-|–|đến|tới|->)\s*(\d{1,2})(?::|h)(\d{2})?\b/gi,
+      ""
+    )
+    .replace(/\b(?:lúc|vào|từ)\s+(\d{1,2})(?::|h)(\d{2})?\b/gi, "")
+    .replace(
+      /^(?:hãy\s+)?(?:tạo|lập|lên|thêm|xếp|đặt)\s+(?:cho\s+(?:tớ|mình|em)\s+)?(?:kế\s+hoạch|lịch\s+trình|lịch|khung\s+giờ)\s*/i,
+      ""
+    )
+    .replace(/\b(?:hôm\s+nay|tối\s+nay|chiều\s+nay|sáng\s+nay|nhé|giúp\s+tớ|giúp\s+mình)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned.length >= 4 && cleaned.length <= 90) {
+    const capitalized = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+    return capitalized;
+  }
+
+  if (matchedGoal) {
+    if (eventType === "exercise") {
+      return `Vận động giải lao: ${matchedGoal.title}`;
+    }
+    if (eventType === "review") {
+      return `Ôn tập củng cố: ${matchedGoal.title}`;
+    }
+    return `Phiên học tập trung: ${matchedGoal.title}`;
+  }
+
+  if (eventType === "exercise") {
+    return "Vận động giải lao Webcam: 15 nhịp Giơ tay qua đầu & Giãn vai";
+  }
+  if (eventType === "review") {
+    return "Ôn tập & Tổng kết kiến thức trọng tâm";
+  }
+  return "Phiên học tập trung theo kế hoạch AI Mentor";
+}
+
+/**
+ * Trích xuất kế hoạch học tập trực tiếp từ yêu cầu trong khung chat của người dùng
+ * (hỗ trợ giờ cụ thể như "19:00 - 20:00", "20h - 21h30", "lúc 20h" hoặc yêu cầu tạo kế hoạch theo môn/buổi)
+ */
+export function parseCustomScheduleFromPrompt(
+  state: AppDatabaseState,
+  userPrompt: string,
+  targetDate?: string
+): SuggestedScheduleAction[] {
+  const dateStr = targetDate ?? new Date().toISOString().slice(0, 10);
+  const normalized = userPrompt.toLowerCase();
+  const eventType = inferScheduleTypeFromPrompt(normalized);
+  const matchedGoal = findMatchingGoal(state, userPrompt);
+  const analysis = analyzeStudentProgress(state, dateStr);
+  const fallbackGoal = matchedGoal ?? analysis.topPriorityGoal?.goal;
+
+  const customActions: SuggestedScheduleAction[] = [];
+
+  // 1. Bắt các khoảng giờ cụ thể trong tin nhắn: VD "19:00 - 20:00", "20h - 21h30", "8h30 đến 9h30"
+  const rangeRegex =
+    /\b(\d{1,2})(?::|h)(\d{2})?\s*(?:-|–|đến|tới|->)\s*(\d{1,2})(?::|h)(\d{2})?\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = rangeRegex.exec(userPrompt)) !== null) {
+    const sh = Number(match[1]);
+    const sm = Number(match[2] ?? "0");
+    const eh = Number(match[3]);
+    const em = Number(match[4] ?? "0");
+    if (sh >= 0 && sh <= 23 && sm >= 0 && sm <= 59 && eh >= 0 && eh <= 23 && em >= 0 && em <= 59) {
+      const startMins = sh * 60 + sm;
+      const endMins = eh * 60 + em;
+      if (endMins > startMins) {
+        customActions.push({
+          title: extractCustomPlanTitle(userPrompt, fallbackGoal, eventType),
+          date: dateStr,
+          startTime: formatHHMM(startMins),
+          endTime: formatHHMM(endMins),
+          type: eventType,
+          goalId: fallbackGoal?.id,
+        });
+      }
+    }
+  }
+
+  // 2. Nếu người dùng chỉ nói giờ bắt đầu: VD "lúc 20:00", "vào 19h30", "từ 21h"
+  if (customActions.length === 0) {
+    const singleTimeMatch =
+      /(?:lúc|vào|từ)\s+(\d{1,2})(?::|h)(\d{2})?(?!\s*(?:-|–|đến|tới|->|\d))/i.exec(
+        userPrompt
+      );
+    if (singleTimeMatch) {
+      const sh = Number(singleTimeMatch[1]);
+      const sm = Number(singleTimeMatch[2] ?? "0");
+      if (sh >= 0 && sh <= 23 && sm >= 0 && sm <= 59) {
+        const startMins = sh * 60 + sm;
+        const duration = eventType === "exercise" ? 15 : 50;
+        customActions.push({
+          title: extractCustomPlanTitle(userPrompt, fallbackGoal, eventType),
+          date: dateStr,
+          startTime: formatHHMM(startMins),
+          endTime: formatHHMM(startMins + duration),
+          type: eventType,
+          goalId: fallbackGoal?.id,
+        });
+      }
+    }
+  }
+
+  return customActions;
+}
+
+/**
+ * Kết hợp kế hoạch tùy chỉnh do người dùng yêu cầu trong khung chat với gợi ý thông minh không trùng lịch
+ */
+export function buildContextualScheduleSuggestions(
+  state: AppDatabaseState,
+  userPrompt: string,
+  targetDate?: string
+): SuggestedScheduleAction[] {
+  const dateStr = targetDate ?? new Date().toISOString().slice(0, 10);
+  const customActions = parseCustomScheduleFromPrompt(state, userPrompt, dateStr);
+  const smartSuggestions = generateSmartScheduleSuggestions(state, dateStr);
+
+  if (customActions.length > 0) {
+    const nonOverlappingSmart = smartSuggestions.filter(
+      (smart) =>
+        !customActions.some((custom) =>
+          isSlotOverlapping(
+            custom.startTime,
+            custom.endTime,
+            smart.startTime,
+            smart.endTime
+          )
+        )
+    );
+    return [...customActions, ...nonOverlappingSmart].slice(0, 3);
+  }
+
+  return smartSuggestions;
+}
+
 /**
  * Tạo phản hồi tư vấn của Cố vấn AI Mentor (chạy tức thì, miễn phí 100%, bám sát dữ liệu thực tế)
  */
@@ -207,13 +409,30 @@ export function generateMentorResponse(
 ): AIMessage {
   const todayStr = referenceDateStr ?? new Date().toISOString().slice(0, 10);
   const analysis = analyzeStudentProgress(state, todayStr);
-  const suggestions = generateSmartScheduleSuggestions(state, todayStr);
+  const customActions = parseCustomScheduleFromPrompt(state, userPrompt, todayStr);
+  const suggestions = buildContextualScheduleSuggestions(state, userPrompt, todayStr);
   const normalized = userPrompt.toLowerCase();
 
   const top = analysis.topPriorityGoal;
   let content = "";
 
-  if (
+  if (customActions.length > 0) {
+    const planLines = customActions
+      .map(
+        (act) =>
+          `• **${act.startTime} - ${act.endTime}**: ${act.title} (${
+            act.type === "study"
+              ? "Học tập"
+              : act.type === "exercise"
+              ? "Vận động"
+              : "Ôn tập"
+          })`
+      )
+      .join("\n");
+    content =
+      `Thầy/Cô đã tạo kế hoạch học tập trực tiếp theo yêu cầu của cậu trong ngày ${todayStr}:\n${planLines}\n\n` +
+      `Cậu có thể bấm nút **"+ Áp dụng vào lịch"** ngay bên dưới tin nhắn này để lưu trực tiếp vào Lịch trình nhé!`;
+  } else if (
     normalized.includes("buồn ngủ") ||
     normalized.includes("mất tập trung") ||
     normalized.includes("pomodoro") ||
@@ -230,6 +449,7 @@ export function generateMentorResponse(
   } else if (
     normalized.includes("lịch") ||
     normalized.includes("khung giờ") ||
+    normalized.includes("kế hoạch") ||
     normalized.includes("hôm nay")
   ) {
     content =
