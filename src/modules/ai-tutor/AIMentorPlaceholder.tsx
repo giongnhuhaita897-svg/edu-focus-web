@@ -33,6 +33,15 @@ import {
   SuggestedScheduleAction,
 } from "@/types/database";
 
+const SAVED_CHATS_KEY = "edufocus-saved-mentor-chats";
+const MAX_SAVED_CHATS = 20;
+
+type SavedChat = {
+  id: string;
+  title: string;
+  savedAt: string;
+  messages: AIMessage[];
+};
 const QUICK_PROMPTS = [
   "Đánh giá tiến độ & định mức học mỗi ngày của tớ",
   "Đề xuất khung giờ học & vận động còn trống hôm nay",
@@ -51,6 +60,8 @@ export function AIMentorPlaceholder() {
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const [sessionStart] = useState<string>(() => new Date().toISOString());
   const [restored, setRestored] = useState<AIMessage[]>([]);
+  const [savedChats, setSavedChats] = useState<SavedChat[]>([]);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
   const chatMessages: AIMessage[] = [
     ...restored,
     ...state.aiMessages.filter((m) => m.createdAt >= sessionStart),
@@ -67,6 +78,15 @@ export function AIMentorPlaceholder() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [chatMessages.length, isSending]);
 
+    useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SAVED_CHATS_KEY);
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) setSavedChats(parsed as SavedChat[]);
+    } catch {
+      // Không đọc được lịch sử thì bỏ qua, web vẫn chạy bình thường
+    }
+  }, []);
   const syncWithServer = (nextState: AppDatabaseState) => {
     setState(nextState);
     if (typeof window !== "undefined" && typeof window.fetch === "function") {
@@ -108,7 +128,49 @@ export function AIMentorPlaceholder() {
     );
   };
 
-   const handleSendPrompt = async (rawText: string) => {
+   const persistSavedChats = (next: SavedChat[]) => {
+    setSavedChats(next);
+    try {
+      window.localStorage.setItem(SAVED_CHATS_KEY, JSON.stringify(next));
+    } catch {
+      setStatusNotice("Không lưu được vào trình duyệt. Hãy thử lại.");
+    }
+  };
+
+  const handleSaveChat = () => {
+    if (chatMessages.length === 0) return;
+    const firstUser = chatMessages.find((m) => m.role === "user");
+    const rawTitle = (firstUser?.content ?? "Cuộc trò chuyện").trim();
+     const defaultTitle =
+       rawTitle.length > 50 ? `${rawTitle.slice(0, 50)}…` : rawTitle;
+    const input = window.prompt("Đặt tên cho cuộc trò chuyện:", defaultTitle);
+    if (input === null) return;
+    const title = input.trim().slice(0, 60) || defaultTitle;
+    const entry: SavedChat = {
+      id: `chat-${Date.now()}`,
+      title,
+      savedAt: new Date().toISOString(),
+      messages: chatMessages,
+    };
+    persistSavedChats([entry, ...savedChats].slice(0, MAX_SAVED_CHATS));
+    setStatusNotice("Đã lưu cuộc trò chuyện vào lịch sử.");
+  };
+
+  const handleOpenSavedChat = (chat: SavedChat) => {
+    const currentIds = new Set(
+      state.aiMessages
+        .filter((m) => m.createdAt >= sessionStart)
+        .map((m) => m.id)
+    );
+    setRestored(chat.messages.filter((m) => !currentIds.has(m.id)));
+    setShowHistory(false);
+    setStatusNotice(`Đã mở lại: "${chat.title}"`);
+  };
+
+  const handleDeleteSavedChat = (id: string) => {
+    persistSavedChats(savedChats.filter((c) => c.id !== id));
+  };
+  const handleSendPrompt = async (rawText: string) => {
     const trimmed = rawText.trim();
     if (!trimmed || isSending) return;
 
@@ -459,6 +521,67 @@ export function AIMentorPlaceholder() {
                 </button>
               ))}
             </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleSaveChat}
+                disabled={chatMessages.length === 0}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-edtech-text text-xs font-semibold border border-edtech-border transition-colors disabled:opacity-50"
+              >
+                Lưu cuộc trò chuyện
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowHistory((v) => !v)}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-edtech-text text-xs font-semibold border border-edtech-border transition-colors"
+              >
+                Lịch sử đã lưu ({savedChats.length})
+              </button>
+            </div>
+
+            {showHistory && (
+              <div className="p-3 rounded-xl bg-edtech-bg border border-edtech-border space-y-2">
+                {savedChats.length === 0 ? (
+                  <p className="text-xs text-edtech-muted">
+                    Chưa có cuộc trò chuyện nào được lưu.
+                  </p>
+                ) : (
+                  <ul className="space-y-2 max-h-48 overflow-y-auto">
+                    {savedChats.map((chat) => (
+                      <li
+                        key={chat.id}
+                        className="flex items-center justify-between gap-2 p-2 rounded-lg bg-white border border-edtech-border"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-edtech-text truncate">
+                            {chat.title}
+                          </p>
+                          <p className="text-xs text-edtech-muted">
+                            {new Date(chat.savedAt).toLocaleString("vi-VN")}
+                          </p>
+                        </div>
+                        <div className="flex gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenSavedChat(chat)}
+                            className="px-2.5 py-1 rounded-lg bg-edtech-primary text-white text-xs font-bold"
+                          >
+                            Mở
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSavedChat(chat.id)}
+                            className="px-2.5 py-1 rounded-lg bg-white border border-edtech-border text-edtech-danger text-xs font-bold"
+                          >
+                            Xóa
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             {/* Lịch sử tin nhắn */}
             <div
