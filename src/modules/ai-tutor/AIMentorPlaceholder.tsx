@@ -13,8 +13,12 @@ import {
   BookOpen,
   Timer,
   CalendarCheck2,
+  AlertTriangle,
+  Activity,
+  PlusCircle,
 } from "lucide-react";
 import {
+  addGoalToState,
   appendAIMessageToState,
   applySuggestedActionToState,
   createDefaultState,
@@ -25,12 +29,14 @@ import {
 } from "@/lib/storage/local-db";
 import {
   analyzeStudentProgress,
+  formatFriendlyDateLabel,
   generateMentorResponse,
   generateSmartScheduleSuggestions,
 } from "@/modules/ai-tutor/ai-engine";
 import {
   AIMessage,
   AppDatabaseState,
+  SuggestedGoalAction,
   SuggestedScheduleAction,
 } from "@/types/database";
 
@@ -43,9 +49,11 @@ type SavedChat = {
   savedAt: string;
   messages: AIMessage[];
 };
+
 const QUICK_PROMPTS = [
   "Đánh giá tiến độ & định mức học mỗi ngày của tớ",
   "Đề xuất khung giờ học & vận động còn trống hôm nay",
+  "Lập kế hoạch học 3 ngày tới cho mục tiêu gấp nhất",
   "Tư vấn chọn Pomodoro 25/5 hay 50/15 để không bị buồn ngủ",
 ];
 
@@ -55,6 +63,9 @@ export function AIMentorPlaceholder() {
   );
   const [promptInput, setPromptInput] = useState<string>("");
   const [appliedKeys, setAppliedKeys] = useState<Record<string, boolean>>({});
+  const [appliedGoalKeys, setAppliedGoalKeys] = useState<
+    Record<string, boolean>
+  >({});
   const [statusNotice, setStatusNotice] = useState<string>("");
   const [isSending, setIsSending] = useState<boolean>(false);
   const formRef = useRef<HTMLFormElement | null>(null);
@@ -69,6 +80,7 @@ export function AIMentorPlaceholder() {
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
     return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
+
   useEffect(() => {
     const el = chatListRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -83,6 +95,7 @@ export function AIMentorPlaceholder() {
       // Không đọc được lịch sử thì bỏ qua, web vẫn chạy bình thường
     }
   }, []);
+
   const syncWithServer = (nextState: AppDatabaseState) => {
     setState(nextState);
     if (typeof window !== "undefined" && typeof window.fetch === "function") {
@@ -98,9 +111,13 @@ export function AIMentorPlaceholder() {
 
   const analysis = analyzeStudentProgress(state);
   const smartSuggestions = generateSmartScheduleSuggestions(state);
+  const { habits } = analysis;
 
   const getActionKey = (action: SuggestedScheduleAction) =>
     `${action.date}-${action.startTime}-${action.title}`;
+
+  const getGoalKey = (goal: SuggestedGoalAction) =>
+    `${goal.title.toLowerCase()}-${goal.deadline}`;
 
   const isActionAlreadyInSchedule = (
     action: SuggestedScheduleAction,
@@ -116,6 +133,19 @@ export function AIMentorPlaceholder() {
     );
   };
 
+  const isGoalAlreadyInState = (
+    goalAction: SuggestedGoalAction,
+    targetState: AppDatabaseState = state
+  ) => {
+    const key = getGoalKey(goalAction);
+    if (appliedGoalKeys[key]) return true;
+    return targetState.goals.some(
+      (g) =>
+        g.title.toLowerCase() === goalAction.title.toLowerCase() &&
+        g.deadline === goalAction.deadline
+    );
+  };
+
   const handleApplySuggestion = (action: SuggestedScheduleAction) => {
     const latestState = loadAppState();
     if (isActionAlreadyInSchedule(action, latestState)) return;
@@ -124,7 +154,48 @@ export function AIMentorPlaceholder() {
     const key = getActionKey(action);
     setAppliedKeys((prev) => ({ ...prev, [key]: true }));
     setStatusNotice(
-      `Đã thêm "${action.title}" (${action.startTime} - ${action.endTime}) vào Lịch trình!`
+      `Đã thêm "${action.title}" (${action.date} • ${action.startTime} - ${action.endTime}) vào Lịch trình!`
+    );
+  };
+
+  const handleApplyAllSuggestions = (actions: SuggestedScheduleAction[]) => {
+    let current = loadAppState();
+    const newlyAppliedKeys: Record<string, boolean> = {};
+    let addedCount = 0;
+
+    for (const act of actions) {
+      if (!isActionAlreadyInSchedule(act, current)) {
+        current = applySuggestedActionToState(current, act);
+        newlyAppliedKeys[getActionKey(act)] = true;
+        addedCount++;
+      }
+    }
+
+    if (addedCount > 0) {
+      syncWithServer(current);
+      setAppliedKeys((prev) => ({ ...prev, ...newlyAppliedKeys }));
+      setStatusNotice(
+        `Đã thêm toàn bộ ${addedCount} buổi học vào Lịch trình thành công!`
+      );
+    }
+  };
+
+  const handleApplySuggestedGoal = (goalAction: SuggestedGoalAction) => {
+    const latestState = loadAppState();
+    if (isGoalAlreadyInState(goalAction, latestState)) return;
+    const next = addGoalToState(latestState, {
+      title: goalAction.title,
+      description: goalAction.description,
+      category: goalAction.category,
+      targetHours: goalAction.targetHours,
+      completedHours: 0,
+      deadline: goalAction.deadline,
+    });
+    syncWithServer(next);
+    const key = getGoalKey(goalAction);
+    setAppliedGoalKeys((prev) => ({ ...prev, [key]: true }));
+    setStatusNotice(
+      `Đã tạo mục tiêu mới "${goalAction.title}" (${goalAction.targetHours} giờ • Hạn ${goalAction.deadline})!`
     );
   };
 
@@ -176,7 +247,7 @@ export function AIMentorPlaceholder() {
       id: `msg-welcome-${Date.now()}`,
       role: "assistant",
       content:
-        "Thầy/Cô đã mở phiên trò chuyện mới! Cậu muốn hỏi bài, thảo luận lộ trình hay tạo kế hoạch học tập cho khung giờ nào hôm nay?",
+        "Thầy/Cô đã mở phiên trò chuyện mới! Cậu có thể nhờ mình **lập kế hoạch theo giờ/buổi** (VD: *tối nay*, *sáng mai*, *3 ngày tới*), **tạo mục tiêu mới**, hoặc **tư vấn phương pháp học & chống buồn ngủ** nhé.",
       createdAt: new Date().toISOString(),
     };
     const nextState = saveAppState({
@@ -226,13 +297,24 @@ export function AIMentorPlaceholder() {
         }),
       });
       if (!res.ok) throw new Error("AI mentor request failed");
-      const data = (await res.json()) as { message?: AIMessage };
+      const data = (await res.json()) as {
+        message?: AIMessage;
+        source?: "gemini" | "fallback";
+      };
       if (!data.message) throw new Error("Empty AI mentor response");
-      aiReply = data.message;
+      aiReply = {
+        ...data.message,
+        source: data.message.source ?? data.source ?? "gemini",
+      };
     } catch {
-      // Mất mạng hoặc lỗi server: đọc state mới nhất để tránh ghi đè lịch người dùng vừa thêm
+      // Mất mạng hoặc lỗi server: đọc state mới nhất và truyền kèm history để nhớ ngữ cảnh câu trước
       const latestForFallback = loadAppState();
-      aiReply = generateMentorResponse(latestForFallback, trimmed);
+      aiReply = generateMentorResponse(
+        latestForFallback,
+        trimmed,
+        undefined,
+        historyTurns
+      );
     }
 
     // Luôn lấy state mới nhất từ localStorage trước khi nối câu trả lời của AI (tránh Race Condition)
@@ -270,14 +352,15 @@ export function AIMentorPlaceholder() {
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-edtech-primary border border-blue-200">
-            Giai đoạn 3 • Cố vấn Học tập &amp; Đề xuất Lịch trình
+            Giai đoạn 3 • Cố vấn Học tập, Chẩn đoán Kỷ luật &amp; Lập Kế hoạch
           </span>
           <h1 className="mt-2 text-2xl md:text-3xl font-bold text-edtech-text">
             Cố vấn Học tập AI Mentor
           </h1>
           <p className="mt-1 text-sm text-edtech-muted">
-            Phân tích quỹ thời gian còn lại của từng mục tiêu, tính định mức
-            Pomodoro mỗi ngày và đề xuất khung giờ học tự động không trùng lịch.
+            Chẩn đoán dữ liệu tập trung từ Webcam &amp; Pomodoro, nhớ ngữ cảnh
+            thảo luận nhiều lượt và khởi tạo mục tiêu / lịch trình nhiều ngày
+            ngay trong khung chat.
           </p>
         </div>
 
@@ -322,7 +405,7 @@ export function AIMentorPlaceholder() {
         </div>
       )}
 
-      {/* PHẦN 1: BẢNG ĐÁNH GIÁ TIẾN ĐỘ & ĐỊNH MỨC HỌC MỖI NGÀY */}
+      {/* PHẦN 1: BẢNG ĐÁNH GIÁ TIẾN ĐỘ, CHẨN ĐOÁN KỶ LUẬT & ĐỊNH MỨC HỌC MỖI NGÀY */}
       <section
         aria-labelledby="ai-diagnostic-heading"
         className="p-6 rounded-2xl bg-edtech-surface border border-edtech-border shadow-sm space-y-4"
@@ -346,14 +429,81 @@ export function AIMentorPlaceholder() {
           </span>
         </div>
 
+        {/* Thanh Chẩn đoán Hành vi & Kỷ luật Thực tế từ Webcam & Pomodoro */}
+        <div
+          data-testid="ai-discipline-habit-bar"
+          className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-slate-50 border border-edtech-border text-xs"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle
+              className={`w-4 h-4 shrink-0 mt-0.5 ${
+                habits.overdueGoalsCount > 0 || habits.urgentGoalsCount > 0
+                  ? "text-amber-600"
+                  : "text-edtech-primary"
+              }`}
+              aria-hidden={true}
+            />
+            <div>
+              <p className="font-bold text-edtech-text">Cảnh báo Hạn chót</p>
+              <p className="text-edtech-muted">
+                {habits.overdueGoalsCount > 0
+                  ? `${habits.overdueGoalsCount} mục tiêu quá hạn cần giải cứu`
+                  : habits.urgentGoalsCount > 0
+                  ? `${habits.urgentGoalsCount} mục tiêu gấp (≤ 7 ngày)`
+                  : "Tất cả mục tiêu trong ngưỡng an toàn"}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5">
+            <Sparkles
+              className={`w-4 h-4 shrink-0 mt-0.5 ${
+                habits.hasDrowsinessRisk
+                  ? "text-edtech-danger"
+                  : "text-edtech-success"
+              }`}
+              aria-hidden={true}
+            />
+            <div>
+              <p className="font-bold text-edtech-text">
+                Kỷ luật Webcam &amp; Tỉnh táo
+              </p>
+              <p className="text-edtech-muted">
+                {habits.penalizedSessionsCount > 0 ||
+                habits.totalDrowsinessAlerts > 0
+                  ? `${habits.penalizedSessionsCount} phiên bị phạt • ${habits.totalDrowsinessAlerts} cảnh báo buồn ngủ`
+                  : `${analysis.totalDistractions} lần xao nhãng • Chưa có phiên bị phạt`}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5">
+            <Activity
+              className="w-4 h-4 shrink-0 mt-0.5 text-edtech-success"
+              aria-hidden={true}
+            />
+            <div>
+              <p className="font-bold text-edtech-text">
+                Cân bằng Học &amp; Vận động
+              </p>
+              <p className="text-edtech-muted">
+                {habits.studySessionsCount} ca học •{" "}
+                {habits.exerciseSessionsCount} ca vận động (
+                {habits.totalExerciseReps} nhịp)
+              </p>
+            </div>
+          </div>
+        </div>
+
         {analysis.diagnostics.length === 0 ? (
           <div className="p-6 rounded-xl bg-edtech-bg border border-dashed border-slate-300 text-center space-y-2">
             <p className="text-sm font-bold text-edtech-text">
               Chưa có mục tiêu nào để AI phân tích định mức
             </p>
             <p className="text-xs text-edtech-muted">
-              Hãy tạo ít nhất 1 mục tiêu tại mục Lịch trình &amp; Mục tiêu để
-              AI tính số phiên Pomodoro cần học mỗi ngày.
+              Hãy tạo ít nhất 1 mục tiêu tại mục Lịch trình &amp; Mục tiêu (hoặc
+              nhắn trực tiếp vào khung chat bên dưới: &quot;Tạo mục tiêu ôn Giải
+              tích 20 giờ&quot;) để AI tính số phiên Pomodoro mỗi ngày.
             </p>
             <Link
               href="/calendar"
@@ -534,11 +684,11 @@ export function AIMentorPlaceholder() {
                   id="ai-chat-heading"
                   className="text-lg font-bold text-edtech-text"
                 >
-                  Trò chuyện &amp; Hỏi đáp với Thầy Cô AI
+                  Trò chuyện &amp; Lập Kế hoạch với Cố vấn AI
                 </h2>
               </div>
               <span className="text-xs text-edtech-muted">
-                Tư vấn cá nhân hóa theo dữ liệu thật
+                Nhớ ngữ cảnh • Hỗ trợ tạo lịch &amp; mục tiêu
               </span>
             </div>
 
@@ -634,6 +784,13 @@ export function AIMentorPlaceholder() {
             >
               {chatMessages.map((msg) => {
                 const isAssistant = msg.role === "assistant";
+                const unaddedActionsCount =
+                  isAssistant && msg.suggestedActions
+                    ? msg.suggestedActions.filter(
+                        (act) => !isActionAlreadyInSchedule(act)
+                      ).length
+                    : 0;
+
                 return (
                   <div
                     key={msg.id}
@@ -643,36 +800,117 @@ export function AIMentorPlaceholder() {
                         : "bg-blue-50/90 border-blue-200 text-edtech-text ml-6"
                     }`}
                   >
-                    <div className="flex items-center gap-2">
-                      {isAssistant ? (
-                        <Sparkles
-                          className="w-4 h-4 text-edtech-primary"
-                          aria-hidden={true}
-                        />
-                      ) : (
-                        <BookOpen
-                          className="w-4 h-4 text-edtech-primary"
-                          aria-hidden={true}
-                        />
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        {isAssistant ? (
+                          <Sparkles
+                            className="w-4 h-4 text-edtech-primary"
+                            aria-hidden={true}
+                          />
+                        ) : (
+                          <BookOpen
+                            className="w-4 h-4 text-edtech-primary"
+                            aria-hidden={true}
+                          />
+                        )}
+                        <span className="text-xs font-bold text-edtech-primary">
+                          {isAssistant ? "Cố vấn AI Mentor" : "Bạn"}
+                        </span>
+                      </div>
+                      {isAssistant && msg.source && (
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-white border border-edtech-border text-edtech-muted">
+                          {msg.source === "gemini"
+                            ? "Gemini AI"
+                            : "Cố vấn Nội bộ"}
+                        </span>
                       )}
-                      <span className="text-xs font-bold text-edtech-primary">
-                        {isAssistant ? "Cố vấn AI Mentor" : "Bạn"}
-                      </span>
                     </div>
 
-                      <div className="text-sm leading-relaxed [&_p]:mb-2 [&_p:last-child]:mb-0 [&_strong]:font-bold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-1">
+                    <div className="text-sm leading-relaxed [&_p]:mb-2 [&_p:last-child]:mb-0 [&_strong]:font-bold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-1">
                       <ReactMarkdown>
                         {msg.content.replace(/\n/g, "  \n")}
                       </ReactMarkdown>
                     </div>
 
+                    {/* Thẻ khởi tạo Mục tiêu mới (SuggestedGoalAction) trực tiếp trong khung chat */}
+                    {isAssistant &&
+                      msg.suggestedGoals &&
+                      msg.suggestedGoals.length > 0 && (
+                        <div className="pt-2 border-t border-edtech-border space-y-2">
+                          <p className="text-xs font-bold text-edtech-muted">
+                            Mục tiêu học tập đề xuất (bấm để khởi tạo):
+                          </p>
+                          <div className="space-y-2">
+                            {msg.suggestedGoals.map((goalAct) => {
+                              const gKey = getGoalKey(goalAct);
+                              const goalAdded = isGoalAlreadyInState(goalAct);
+                              return (
+                                <div
+                                  key={gKey}
+                                  className="p-3 rounded-xl bg-white border border-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                                >
+                                  <div className="text-xs space-y-0.5">
+                                    <div className="font-bold text-edtech-text">
+                                      {goalAct.title}
+                                    </div>
+                                    <div className="text-edtech-muted">
+                                      Chỉ tiêu: {goalAct.targetHours} giờ • Hạn:{" "}
+                                      {goalAct.deadline}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={goalAdded}
+                                    onClick={() =>
+                                      handleApplySuggestedGoal(goalAct)
+                                    }
+                                    className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                                      goalAdded
+                                        ? "bg-emerald-50 text-edtech-success border border-emerald-200"
+                                        : "bg-edtech-primary hover:bg-edtech-primaryHover text-white"
+                                    }`}
+                                  >
+                                    <PlusCircle
+                                      className="w-3.5 h-3.5"
+                                      aria-hidden={true}
+                                    />
+                                    <span>
+                                      {goalAdded
+                                        ? "Đã tạo mục tiêu ✓"
+                                        : "+ Tạo mục tiêu này"}
+                                    </span>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                    {/* Thẻ Kế hoạch Lịch trình (SuggestedScheduleAction) kèm nút Áp dụng tất cả */}
                     {isAssistant &&
                       msg.suggestedActions &&
                       msg.suggestedActions.length > 0 && (
                         <div className="pt-2 border-t border-edtech-border space-y-2">
-                          <p className="text-xs font-bold text-edtech-muted">
-                            Lịch trình gợi ý đi kèm (bấm để thêm):
-                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs font-bold text-edtech-muted">
+                              Lịch trình gợi ý đi kèm (bấm để thêm):
+                            </p>
+                            {msg.suggestedActions.length >= 2 &&
+                              unaddedActionsCount >= 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleApplyAllSuggestions(
+                                      msg.suggestedActions!
+                                    )
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-edtech-primary hover:bg-edtech-primaryHover text-white text-xs font-bold transition-colors"
+                                >
+                                  + Áp dụng tất cả ({unaddedActionsCount} buổi)
+                                </button>
+                              )}
+                          </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {msg.suggestedActions.map((act) => {
                               const actKey = getActionKey(act);
@@ -689,8 +927,13 @@ export function AIMentorPlaceholder() {
                                       : "bg-white hover:bg-blue-50 border-edtech-border text-edtech-text"
                                   }`}
                                 >
-                                  <div className="font-bold text-edtech-primary">
-                                    {act.startTime} - {act.endTime}
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="font-bold text-edtech-primary">
+                                      {act.startTime} - {act.endTime}
+                                    </span>
+                                    <span className="text-[11px] font-medium text-edtech-muted">
+                                      {formatFriendlyDateLabel(act.date)}
+                                    </span>
                                   </div>
                                   <div className="font-semibold truncate mt-0.5">
                                     {act.title}
@@ -732,7 +975,7 @@ export function AIMentorPlaceholder() {
                 htmlFor="ai-mentor-input"
                 className="block text-xs font-bold text-edtech-text mb-1"
               >
-                Đặt câu hỏi hoặc yêu cầu Cố vấn AI điều chỉnh lịch trình
+                Đặt câu hỏi hoặc yêu cầu Cố vấn AI lập kế hoạch &amp; mục tiêu
               </label>
               <textarea
                 id="ai-mentor-input"
@@ -741,14 +984,22 @@ export function AIMentorPlaceholder() {
                 value={promptInput}
                 onChange={(e) => setPromptInput(e.target.value)}
                 onKeyDown={handleTextareaKeyDown}
-                placeholder="VD: Hôm nay tớ nên học môn nào trước? Tối nay tớ hay buồn ngủ thì chia Pomodoro thế nào? (Nhấn Enter để gửi)"
+                placeholder="VD: Lập kế hoạch ôn IELTS 3 ngày tới; Xếp lịch học Cấu trúc dữ liệu tối mai; hoặc Tạo mục tiêu ôn Giải tích 25 giờ hạn 2026-12-25"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
               />
             </div>
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-edtech-muted">
-                Mẹo: Nhấn <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border">Enter</kbd> để gửi, <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border">Shift + Enter</kbd> để xuống dòng
+                Mẹo: Nhấn{" "}
+                <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border">
+                  Enter
+                </kbd>{" "}
+                để gửi,{" "}
+                <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border">
+                  Shift + Enter
+                </kbd>{" "}
+                để xuống dòng
               </span>
               <button
                 type="submit"
@@ -759,7 +1010,7 @@ export function AIMentorPlaceholder() {
                 <span>Gửi tới Cố vấn AI</span>
               </button>
             </div>
-           </form>
+          </form>
         </section>
       </div>
     </div>

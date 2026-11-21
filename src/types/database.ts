@@ -76,12 +76,22 @@ export interface SuggestedScheduleAction {
   goalId?: string;
 }
 
+export interface SuggestedGoalAction {
+  title: string;
+  description?: string;
+  category: GoalCategory;
+  targetHours: number;
+  deadline: string; // YYYY-MM-DD
+}
+
 export interface AIMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   createdAt: string; // ISO string
   suggestedActions?: SuggestedScheduleAction[];
+  suggestedGoals?: SuggestedGoalAction[];
+  source?: "gemini" | "fallback";
 }
 
 export interface AppDatabaseState {
