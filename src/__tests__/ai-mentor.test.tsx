@@ -2,6 +2,7 @@ import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  addDaysToDateString,
   createDefaultState,
   loadAppState,
   recordPenalizedStudySessionInState,
@@ -10,6 +11,7 @@ import {
 import {
   analyzeStudentProgress,
   generateMentorResponse,
+  getLocalTodayDateString,
   parseCustomGoalFromPrompt,
   parseCustomScheduleFromPrompt,
 } from "@/modules/ai-tutor/ai-engine";
@@ -46,15 +48,18 @@ describe("Cố vấn Học tập AI Mentor v2 — Chẩn đoán Kỷ luật Đa 
 
   it("2. Hiểu ngôn ngữ tự nhiên: lập lịch theo buổi (tối mai), lộ trình nhiều ngày (3 ngày tới) và nhớ môn học từ câu chat trước (history)", () => {
     const state = createDefaultState();
+    const baseDate = state.scheduleEvents[0].date;
+    const tomorrowDate = addDaysToDateString(baseDate, 1);
+    const dayAfterTomorrowDate = addDaysToDateString(baseDate, 2);
 
     // Lập lịch theo buổi tự nhiên + ngày mai mà không cần gõ số giờ HH:mm
     const tomorrowEveningPlan = parseCustomScheduleFromPrompt(
       state,
       "Xếp lịch học Cấu trúc dữ liệu tối mai giúp tớ",
-      "2026-11-21"
+      baseDate
     );
     expect(tomorrowEveningPlan).toHaveLength(1);
-    expect(tomorrowEveningPlan[0].date).toBe("2026-11-22");
+    expect(tomorrowEveningPlan[0].date).toBe(tomorrowDate);
     expect(tomorrowEveningPlan[0].goalId).toBe("goal-dsa");
     expect(tomorrowEveningPlan[0].startTime).toBe("19:30");
 
@@ -62,13 +67,13 @@ describe("Cố vấn Học tập AI Mentor v2 — Chẩn đoán Kỷ luật Đa 
     const multiDayPlan = parseCustomScheduleFromPrompt(
       state,
       "Lập kế hoạch ôn IELTS trong 3 ngày tới",
-      "2026-11-21"
+      baseDate
     );
     expect(multiDayPlan).toHaveLength(3);
     expect(multiDayPlan.map((p) => p.date)).toEqual([
-      "2026-11-21",
-      "2026-11-22",
-      "2026-11-23",
+      baseDate,
+      tomorrowDate,
+      dayAfterTomorrowDate,
     ]);
     expect(multiDayPlan.every((p) => p.goalId === "goal-ielts")).toBe(true);
 
@@ -83,17 +88,17 @@ describe("Cố vấn Học tập AI Mentor v2 — Chẩn đoán Kỷ luật Đa 
     const followUpPlan = parseCustomScheduleFromPrompt(
       state,
       "Đổi sang sáng mai lúc 08:30 giúp tớ nhé",
-      "2026-11-21",
+      baseDate,
       history
     );
     expect(followUpPlan).toHaveLength(1);
-    expect(followUpPlan[0].date).toBe("2026-11-22");
+    expect(followUpPlan[0].date).toBe(tomorrowDate);
     expect(followUpPlan[0].startTime).toBe("08:30");
     expect(followUpPlan[0].endTime).toBe("09:20");
     expect(followUpPlan[0].goalId).toBe("goal-ielts");
   });
 
-  it("3. Không chèn thẻ lịch mặc định gây rối mắt khi người dùng chỉ hỏi lý thuyết / phương pháp học", () => {
+  it("3. Không chèn thẻ lịch mặc định gây rối mắt khi người dùng chỉ hỏi lý thuyết / chào hỏi, và chuẩn hóa đúng ngày giờ Việt Nam (UTC+7)", () => {
     const state = createDefaultState();
     const reply = generateMentorResponse(
       state,
@@ -103,6 +108,17 @@ describe("Cố vấn Học tập AI Mentor v2 — Chẩn đoán Kỷ luật Đa 
     expect(reply.content).toMatch(/Feynman/i);
     expect(reply.content).toMatch(/Active Recall/i);
     expect(reply.suggestedActions).toHaveLength(0);
+
+    const casualReply = generateMentorResponse(
+      state,
+      "Cảm ơn thầy cô nhiều nhé",
+      "2026-11-21"
+    );
+    expect(casualReply.suggestedActions).toHaveLength(0);
+
+    // Lúc 01:30 sáng giờ Việt Nam (tức 18:30 tối ngày hôm trước theo giờ UTC)
+    const lateNightVN = new Date("2026-11-21T18:30:00.000Z");
+    expect(getLocalTodayDateString(lateNightVN)).toBe("2026-11-22");
   });
 
   it("4. Hỗ trợ nút 'Áp dụng tất cả (N buổi)' và khởi tạo Mục tiêu mới (Goal) 1-Click ngay trong khung chat", async () => {

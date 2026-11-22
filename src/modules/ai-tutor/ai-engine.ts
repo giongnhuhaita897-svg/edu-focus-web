@@ -18,6 +18,30 @@ export interface ChatHistoryTurn {
   content: string;
 }
 
+/**
+ * Lấy ngày hiện tại theo múi giờ Việt Nam (Asia/Ho_Chi_Minh) hoặc giờ địa phương dạng YYYY-MM-DD
+ * Tránh lỗi lệch lùi 1 ngày khi dùng new Date().toISOString() trong khung 00:00 - 06:59 sáng.
+ */
+export function getLocalTodayDateString(now: Date = new Date()): string {
+  try {
+    const formatted = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Ho_Chi_Minh",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(formatted)) {
+      return formatted;
+    }
+  } catch {
+    // Fallback về giờ local của máy
+  }
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 export interface GoalDiagnostic {
   goal: Goal;
   remainingHours: number;
@@ -112,7 +136,7 @@ export function analyzeStudentProgress(
   state: AppDatabaseState,
   referenceDateStr?: string
 ): StudentProgressAnalysis {
-  const todayStr = referenceDateStr ?? new Date().toISOString().slice(0, 10);
+  const todayStr = referenceDateStr ?? getLocalTodayDateString();
 
   const diagnostics: GoalDiagnostic[] = state.goals.map((goal) => {
     const remainingHours = Math.max(0, goal.targetHours - goal.completedHours);
@@ -220,7 +244,7 @@ export function generateSmartScheduleSuggestions(
   state: AppDatabaseState,
   targetDate?: string
 ): SuggestedScheduleAction[] {
-  const dateStr = targetDate ?? new Date().toISOString().slice(0, 10);
+  const dateStr = targetDate ?? getLocalTodayDateString();
   const analysis = analyzeStudentProgress(state, dateStr);
   const eventsOnDate = state.scheduleEvents.filter((e) => e.date === dateStr);
 
@@ -508,7 +532,7 @@ export function parseCustomGoalFromPrompt(
   userPrompt: string,
   referenceDateStr?: string
 ): SuggestedGoalAction[] {
-  const todayStr = referenceDateStr ?? new Date().toISOString().slice(0, 10);
+  const todayStr = referenceDateStr ?? getLocalTodayDateString();
   const normalized = userPrompt.toLowerCase();
 
   const isGoalCreationRequest =
@@ -610,7 +634,7 @@ export function parseCustomScheduleFromPrompt(
   targetDate?: string,
   history?: ChatHistoryTurn[]
 ): SuggestedScheduleAction[] {
-  const todayStr = targetDate ?? new Date().toISOString().slice(0, 10);
+  const todayStr = targetDate ?? getLocalTodayDateString();
   const normalized = userPrompt.toLowerCase();
 
   // Nếu là câu yêu cầu tạo mục tiêu thuần túy (không yêu cầu xếp giờ học), không ép sinh lịch lẻ
@@ -753,7 +777,7 @@ export function parseCustomScheduleFromPrompt(
 
 /**
  * Kiểm tra xem câu hỏi có cần đính kèm thẻ gợi ý lịch trình hay không
- * (Tránh việc hỏi lý thuyết/phương pháp học thông thường cũng bị chèn cứng 3 lịch mặc định)
+ * Chỉ đính kèm khi câu hỏi thực sự có ý định về lịch trình, kế hoạch, mục tiêu, tiến độ hoặc kỷ luật Pomodoro.
  */
 export function shouldAttachScheduleSuggestions(
   userPrompt: string,
@@ -762,7 +786,7 @@ export function shouldAttachScheduleSuggestions(
   if (customActions.length > 0) return true;
   const normalized = userPrompt.toLowerCase();
 
-  // Nếu là câu hỏi thuần về phương pháp học / khái niệm / giải thích mà không nhắc tới lịch/tiến độ
+  // Không đính kèm lịch khi người dùng chỉ hỏi phương pháp học / lý thuyết
   const isPureMethodologyQuestion =
     (normalized.includes("phương pháp") ||
       normalized.includes("cách học") ||
@@ -777,7 +801,42 @@ export function shouldAttachScheduleSuggestions(
 
   if (isPureMethodologyQuestion) return false;
 
-  return true;
+  // Chỉ đính kèm thẻ lịch khi có từ khóa liên quan tới lịch trình, mục tiêu, tiến độ, Pomodoro hoặc giải cứu deadline
+  const scheduleOrProgressKeywords = [
+    "lịch",
+    "khung giờ",
+    "kế hoạch",
+    "lộ trình",
+    "mục tiêu",
+    "tiến độ",
+    "định mức",
+    "đánh giá",
+    "đề xuất",
+    "gợi ý",
+    "hôm nay",
+    "ngày mai",
+    "buổi tối",
+    "buổi sáng",
+    "buổi chiều",
+    "tối nay",
+    "sáng mai",
+    "chiều nay",
+    "pomodoro",
+    "25/5",
+    "50/15",
+    "buồn ngủ",
+    "mất tập trung",
+    "xao nhãng",
+    "bị phạt",
+    "gấp",
+    "trễ",
+    "quá hạn",
+    "nguy hiểm",
+    "cứu",
+    "ưu tiên",
+  ];
+
+  return scheduleOrProgressKeywords.some((kw) => normalized.includes(kw));
 }
 
 /**
@@ -789,7 +848,7 @@ export function buildContextualScheduleSuggestions(
   targetDate?: string,
   history?: ChatHistoryTurn[]
 ): SuggestedScheduleAction[] {
-  const dateStr = targetDate ?? new Date().toISOString().slice(0, 10);
+  const dateStr = targetDate ?? getLocalTodayDateString();
   const customActions = parseCustomScheduleFromPrompt(
     state,
     userPrompt,
@@ -833,7 +892,7 @@ export function formatFriendlyDateLabel(
   dateStr: string,
   todayStr?: string
 ): string {
-  const baseToday = todayStr ?? new Date().toISOString().slice(0, 10);
+  const baseToday = todayStr ?? getLocalTodayDateString();
   if (dateStr === baseToday) return `Hôm nay (${dateStr})`;
   if (dateStr === addDaysToDateString(baseToday, 1)) {
     return `Ngày mai (${dateStr})`;
@@ -853,7 +912,7 @@ export function generateMentorResponse(
   referenceDateStr?: string,
   history?: ChatHistoryTurn[]
 ): AIMessage {
-  const todayStr = referenceDateStr ?? new Date().toISOString().slice(0, 10);
+  const todayStr = referenceDateStr ?? getLocalTodayDateString();
   const analysis = analyzeStudentProgress(state, todayStr);
   const customGoals = parseCustomGoalFromPrompt(userPrompt, todayStr);
   const customActions = parseCustomScheduleFromPrompt(

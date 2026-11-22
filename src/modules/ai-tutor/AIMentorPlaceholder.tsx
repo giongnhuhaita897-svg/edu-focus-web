@@ -32,6 +32,7 @@ import {
   formatFriendlyDateLabel,
   generateMentorResponse,
   generateSmartScheduleSuggestions,
+  getLocalTodayDateString,
 } from "@/modules/ai-tutor/ai-engine";
 import {
   AIMessage,
@@ -285,6 +286,7 @@ export function AIMentorPlaceholder() {
     setPromptInput("");
     setIsSending(true);
 
+    const clientDate = getLocalTodayDateString();
     let aiReply: AIMessage;
     try {
       const res = await fetch("/api/ai-mentor", {
@@ -294,6 +296,7 @@ export function AIMentorPlaceholder() {
           prompt: trimmed,
           state: withUser,
           history: historyTurns,
+          clientDate,
         }),
       });
       if (!res.ok) throw new Error("AI mentor request failed");
@@ -312,7 +315,7 @@ export function AIMentorPlaceholder() {
       aiReply = generateMentorResponse(
         latestForFallback,
         trimmed,
-        undefined,
+        clientDate,
         historyTurns
       );
     }
