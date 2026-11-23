@@ -25,6 +25,8 @@ import {
   updateScheduleEventStatusInState,
 } from "@/lib/storage/local-db";
 import { AppDatabaseState } from "@/types/database";
+import { getWeeklyFocus } from "@/modules/analytics/analytics-engine";
+import { WeeklyFocusChart } from "@/modules/analytics/WeeklyFocusChart";
 
 export default function DashboardPage() {
   const [state, setState] = useState<AppDatabaseState>(() =>
@@ -58,6 +60,7 @@ export default function DashboardPage() {
       : 100;
 
   const latestAdvice = state.aiMessages[state.aiMessages.length - 1];
+  const weeklyFocus = getWeeklyFocus(state.focusSessions);
   const isFreshUser =
     state.goals.length === 0 && state.scheduleEvents.length === 0;
 
@@ -276,7 +279,10 @@ export default function DashboardPage() {
           </p>
         </article>
       </section>
-
+{/* Weekly Focus Analytics */}
+<section aria-label="Thống kê thời gian tập trung trong 7 ngày">
+  <WeeklyFocusChart days={weeklyFocus} />
+</section>
       {/* Gợi ý từ Cố vấn AI */}
       {latestAdvice && (
         <section

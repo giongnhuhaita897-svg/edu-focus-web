@@ -1,0 +1,5 @@
+import type { DailyFocus } from "./analytics-engine";
+export function WeeklyFocusChart({days}:{days:DailyFocus[]}) {
+ const max=Math.max(1,...days.map(d=>Math.max(d.studyMinutes,d.exerciseMinutes)));
+ return <div className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="mb-3 text-lg font-bold text-slate-800">Thời gian học và vận động (7 ngày)</h2><div className="mb-3 flex gap-4 text-sm"><span className="text-blue-600">■ Học</span><span className="text-emerald-600">■ Vận động</span></div><svg viewBox="0 0 700 240" role="img" aria-label="Biểu đồ cột thời gian học và vận động theo ngày" className="w-full"><line x1="35" y1="195" x2="690" y2="195" stroke="#94a3b8"/>{days.map((d,i)=>{const x=55+i*92;return <g key={d.date}><rect x={x} y={195-d.studyMinutes/max*160} width="30" height={d.studyMinutes/max*160} fill="#2563eb" rx="3"/><rect x={x+32} y={195-d.exerciseMinutes/max*160} width="30" height={d.exerciseMinutes/max*160} fill="#10b981" rx="3"/><text x={x+30} y="216" textAnchor="middle" fontSize="12" fill="#475569">{d.date.slice(5)}</text></g>})}<text x="35" y="16" fontSize="12" fill="#475569">Tối đa: {max} phút</text></svg></div>;
+}
