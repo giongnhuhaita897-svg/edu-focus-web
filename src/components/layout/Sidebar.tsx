@@ -9,6 +9,7 @@ import {
   Timer,
   Camera,
   Sparkles,
+  Compass,
   GraduationCap,
   ShieldCheck,
   Flame,
@@ -18,6 +19,12 @@ import {
   loadAppState,
   STATE_CHANGE_EVENT,
 } from "@/lib/storage/local-db";
+import { OrientationProfile } from "@/modules/orientation/orientation-engine";
+import {
+  getEffectiveDailyTargetMinutes,
+  loadOrientationProfile,
+  ORIENTATION_CHANGE_EVENT,
+} from "@/modules/orientation/orientation-storage";
 import { AppDatabaseState } from "@/types/database";
 
 export interface NavItem {
@@ -58,6 +65,12 @@ export const NAV_ITEMS: NavItem[] = [
     description: "Đánh giá & gợi ý lộ trình",
     icon: Sparkles,
   },
+  {
+    href: "/orientation",
+    label: "Định hướng",
+    description: "Xác nhận quỹ thời gian & ưu tiên",
+    icon: Compass,
+  },
 ];
 
 export function Sidebar() {
@@ -65,19 +78,29 @@ export function Sidebar() {
   const [summary, setSummary] = useState<AppDatabaseState>(() =>
     createDefaultState()
   );
+  const [orientation, setOrientation] = useState<OrientationProfile | null>(
+    null
+  );
 
   useEffect(() => {
-    const refresh = () => setSummary(loadAppState());
+    const refresh = () => {
+      setSummary(loadAppState());
+      setOrientation(loadOrientationProfile());
+    };
     refresh();
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
-    return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
+    window.addEventListener(ORIENTATION_CHANGE_EVENT, refresh);
+    return () => {
+      window.removeEventListener(STATE_CHANGE_EVENT, refresh);
+      window.removeEventListener(ORIENTATION_CHANGE_EVENT, refresh);
+    };
   }, []);
 
   const totalMinutes = summary.focusSessions.reduce(
     (sum, s) => sum + s.durationMinutes,
     0
   );
-  const dailyTargetMinutes = 120;
+  const dailyTargetMinutes = getEffectiveDailyTargetMinutes(orientation);
   const dailyPercent = Math.min(
     100,
     Math.round((totalMinutes / dailyTargetMinutes) * 100)
@@ -168,10 +191,16 @@ export function Sidebar() {
             </span>
             <span className="font-bold text-emerald-400">{dailyPercent}%</span>
           </div>
-          <p className="text-xs text-slate-300">
+          <p className="text-xs text-slate-300" data-testid="sidebar-daily-target">
             Đã tích lũy <strong className="text-white">{totalMinutes}</strong> /{" "}
             {dailyTargetMinutes} phút hôm nay
           </p>
+          {orientation && orientation.plan.allocations[0] && (
+            <p className="text-[11px] text-amber-200/95 truncate">
+              Ưu tiên #1: {orientation.plan.allocations[0].shortTitle} (
+              {orientation.dailyHours}h/ngày)
+            </p>
+          )}
           <div className="w-full h-1.5 rounded-full bg-slate-700 overflow-hidden">
             <div
               className="h-full bg-emerald-400 rounded-full transition-all"

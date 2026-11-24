@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   Activity,
   PlusCircle,
+  Compass,
 } from "lucide-react";
 import {
   addGoalToState,
@@ -34,6 +35,12 @@ import {
   generateSmartScheduleSuggestions,
   getLocalTodayDateString,
 } from "@/modules/ai-tutor/ai-engine";
+import { OrientationProfile } from "@/modules/orientation/orientation-engine";
+import {
+  formatOrientationContextForMentor,
+  loadOrientationProfile,
+  ORIENTATION_CHANGE_EVENT,
+} from "@/modules/orientation/orientation-storage";
 import {
   AIMessage,
   AppDatabaseState,
@@ -73,13 +80,22 @@ export function AIMentorPlaceholder() {
   const chatListRef = useRef<HTMLDivElement | null>(null);
   const [savedChats, setSavedChats] = useState<SavedChat[]>([]);
   const [showHistory, setShowHistory] = useState<boolean>(false);
+  const [orientationProfile, setOrientationProfile] =
+    useState<OrientationProfile | null>(null);
   const chatMessages: AIMessage[] = state.aiMessages;
 
   useEffect(() => {
-    const refresh = () => setState(loadAppState());
+    const refresh = () => {
+      setState(loadAppState());
+      setOrientationProfile(loadOrientationProfile());
+    };
     refresh();
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
-    return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
+    window.addEventListener(ORIENTATION_CHANGE_EVENT, refresh);
+    return () => {
+      window.removeEventListener(STATE_CHANGE_EVENT, refresh);
+      window.removeEventListener(ORIENTATION_CHANGE_EVENT, refresh);
+    };
   }, []);
 
   useEffect(() => {
@@ -287,6 +303,9 @@ export function AIMentorPlaceholder() {
     setIsSending(true);
 
     const clientDate = getLocalTodayDateString();
+    const orientationContext = formatOrientationContextForMentor(
+      loadOrientationProfile()
+    );
     let aiReply: AIMessage;
     try {
       const res = await fetch("/api/ai-mentor", {
@@ -297,6 +316,7 @@ export function AIMentorPlaceholder() {
           state: withUser,
           history: historyTurns,
           clientDate,
+          ...(orientationContext ? { orientationContext } : {}),
         }),
       });
       if (!res.ok) throw new Error("AI mentor request failed");
@@ -368,6 +388,17 @@ export function AIMentorPlaceholder() {
         </div>
 
         <div className="flex flex-wrap gap-2.5 shrink-0">
+          <Link
+            href="/orientation"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-edtech-primary text-sm font-semibold border border-blue-200 transition-colors"
+          >
+            <Compass className="w-4 h-4" aria-hidden={true} />
+            <span>
+              {orientationProfile
+                ? `Định hướng: ${orientationProfile.dailyHours}h/ngày`
+                : "Định hướng quỹ giờ"}
+            </span>
+          </Link>
           <Link
             href="/calendar"
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-edtech-surface hover:bg-slate-100 text-edtech-text text-sm font-semibold border border-edtech-border transition-colors"

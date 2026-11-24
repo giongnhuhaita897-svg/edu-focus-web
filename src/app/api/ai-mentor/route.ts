@@ -91,6 +91,7 @@ interface AIMentorRequestBody {
   state?: AppDatabaseState;
   history?: ChatHistoryTurn[];
   clientDate?: string;
+  orientationContext?: string;
 }
 
 function isValidDateString(val: unknown): val is string {
@@ -381,17 +382,22 @@ async function askGemini(
   state: AppDatabaseState,
   prompt: string,
   todayStr: string,
-  history?: ChatHistoryTurn[]
+  history?: ChatHistoryTurn[],
+  orientationContext?: string
 ): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
 
   const ai = new GoogleGenAI({ apiKey });
   const historyBlock = buildHistoryContext(history);
+  const orientationBlock =
+    typeof orientationContext === "string" && orientationContext.trim().length > 0
+      ? `\n\nĐỊNH HƯỚNG QUỸ THỜI GIAN ĐÃ XÁC NHẬN:\n${orientationContext.trim().slice(0, 500)}`
+      : "";
   const res = await withTimeout(
     ai.models.generateContent({
       model: MODEL,
-      contents: `DỮ LIỆU HỌC TẬP & CHẨN ĐOÁN KỶ LUẬT:\n${buildContext(state, todayStr)}${historyBlock}\n\nCÂU HỎI HIỆN TẠI CỦA SINH VIÊN:\n${prompt}`,
+      contents: `DỮ LIỆU HỌC TẬP & CHẨN ĐOÁN KỶ LUẬT:\n${buildContext(state, todayStr)}${orientationBlock}${historyBlock}\n\nCÂU HỎI HIỆN TẠI CỦA SINH VIÊN:\n${prompt}`,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -441,7 +447,8 @@ export async function POST(request: Request) {
           currentState,
           prompt,
           todayStr,
-          body.history
+          body.history,
+          body.orientationContext
         );
         if (!text) throw new Error("Empty Gemini response");
         const parsed = extractGeminiPlanAndCleanText(
