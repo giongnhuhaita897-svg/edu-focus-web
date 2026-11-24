@@ -25,7 +25,11 @@ import {
   updateScheduleEventStatusInState,
 } from "@/lib/storage/local-db";
 import { AppDatabaseState } from "@/types/database";
-import { getWeeklyFocus } from "@/modules/analytics/analytics-engine";
+import {
+  getWeeklyFocus,
+  getDailyStreak,
+  getAchievements,
+} from "@/modules/analytics/analytics-engine";
 import { WeeklyFocusChart } from "@/modules/analytics/WeeklyFocusChart";
 
 export default function DashboardPage() {
@@ -61,6 +65,8 @@ export default function DashboardPage() {
 
   const latestAdvice = state.aiMessages[state.aiMessages.length - 1];
   const weeklyFocus = getWeeklyFocus(state.focusSessions);
+  const dailyStreak = getDailyStreak(state.focusSessions);
+const achievements = getAchievements(state.focusSessions);
   const isFreshUser =
     state.goals.length === 0 && state.scheduleEvents.length === 0;
 
@@ -282,6 +288,54 @@ export default function DashboardPage() {
 {/* Weekly Focus Analytics */}
 <section aria-label="Thống kê thời gian tập trung trong 7 ngày">
   <WeeklyFocusChart days={weeklyFocus} />
+</section>
+<section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+  <article className="rounded-2xl border border-slate-200 bg-white p-5">
+    <h2 className="text-lg font-bold text-slate-800">
+      Chuỗi ngày tập trung
+    </h2>
+
+    <p className="mt-3 text-3xl font-bold text-blue-600">
+      {dailyStreak} ngày
+    </p>
+
+    <p className="mt-2 text-sm text-slate-500">
+      Số ngày học tập liên tiếp được ghi nhận.
+    </p>
+  </article>
+
+  <article className="rounded-2xl border border-slate-200 bg-white p-5">
+    <h2 className="text-lg font-bold text-slate-800">
+      Thành tích học tập
+    </h2>
+
+    <p className="mt-3 text-3xl font-bold text-emerald-600">
+      {achievements.length} / 3
+    </p>
+
+    <div className="mt-4 space-y-3">
+      {achievements.length === 0 ? (
+        <p className="text-sm text-slate-500">
+          Chưa có thành tích được ghi nhận.
+        </p>
+      ) : (
+        achievements.map((achievement) => (
+          <div
+            key={achievement.id}
+            className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"
+          >
+            <p className="text-sm font-bold text-emerald-700">
+              {achievement.title}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-600">
+              {achievement.description}
+            </p>
+          </div>
+        ))
+      )}
+    </div>
+  </article>
 </section>
       {/* Gợi ý từ Cố vấn AI */}
       {latestAdvice && (

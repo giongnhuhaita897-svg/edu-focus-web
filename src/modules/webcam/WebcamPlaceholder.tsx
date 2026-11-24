@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { parseFocusQuery } from "@/modules/analytics/pomodoro-query";
 import {
   BookOpen,
   Dumbbell,
@@ -58,6 +60,7 @@ export const WEBCAM_EXERCISES: ExerciseOption[] = [
 ];
 
 export function WebcamPlaceholder() {
+  const query = useSearchParams();
   const [dbState, setDbState] = useState<AppDatabaseState>(() =>
     createDefaultState()
   );
@@ -77,7 +80,14 @@ export function WebcamPlaceholder() {
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
     return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
+useEffect(() => {
+  const params = parseFocusQuery(
+    new URLSearchParams(query.toString())
+  );
 
+  setActiveTab(params.tab);
+  setSelectedPreset(params.preset);
+}, [query]);
   const currentPreset = POMODORO_PRESETS[selectedPreset];
   const currentExercise =
     WEBCAM_EXERCISES.find((e) => e.id === selectedExercise) ??
