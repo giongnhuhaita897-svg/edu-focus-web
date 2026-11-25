@@ -19,6 +19,7 @@ import {
   List,
   Repeat,
   Eraser,
+  CalendarDays,
 } from "lucide-react";
 import {
   addGoalToState,
@@ -37,6 +38,9 @@ import {
   updateScheduleEventInState,
   updateScheduleEventStatusInState,
 } from "@/lib/storage/local-db";
+import { WeekCalendarGrid } from "./WeekCalendarGrid";
+import { CameraPrivacyGuide } from "@/components/onboarding/CameraPrivacyGuide";
+import { addDaysToISO, findOverlappingEvent } from "./calendar-utils";
 import {
   AppDatabaseState,
   Goal,
@@ -97,7 +101,7 @@ export function CalendarPlaceholder() {
   const [eventError, setEventError] = useState<string>("");
 
   // State bộ lọc & chế độ xem lịch trình (Danh sách vs Bảng khung giờ v1.1+)
-  const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [viewMode, setViewMode] = useState<"list" | "board" | "week">("list");
   const [filterDateMode, setFilterDateMode] = useState<"all" | "date">("all");
   const [selectedFilterDate, setSelectedFilterDate] = useState<string>(today);
   const [filterEventType, setFilterEventType] = useState<
@@ -220,6 +224,17 @@ export function CalendarPlaceholder() {
     }
 
     if (editingEventId) {
+      const conflict = findOverlappingEvent(
+        state.scheduleEvents,
+        { date: eventDate, startTime: eventStartTime, endTime: eventEndTime },
+        editingEventId
+      );
+      if (conflict) {
+        setEventError(
+          `Trùng giờ với “${conflict.title}” (${conflict.startTime}–${conflict.endTime}). Hãy chọn khung giờ khác.`
+        );
+        return;
+      }
       const next = updateScheduleEventInState(state, editingEventId, {
         title: trimmedTitle,
         date: eventDate,
@@ -235,7 +250,21 @@ export function CalendarPlaceholder() {
       return;
     }
 
-    const repeatCount = Number(eventRepeatDays) || 1;
+    const repeatCount = Math.max(1, Math.min(7, Number(eventRepeatDays) || 1));
+    for (let day = 0; day < repeatCount; day += 1) {
+      const candidateDate = addDaysToISO(eventDate, day);
+      const conflict = findOverlappingEvent(state.scheduleEvents, {
+        date: candidateDate,
+        startTime: eventStartTime,
+        endTime: eventEndTime,
+      });
+      if (conflict) {
+        setEventError(
+          `Ngày ${candidateDate} bị trùng với “${conflict.title}” (${conflict.startTime}–${conflict.endTime}). Hãy đổi giờ hoặc ngày.`
+        );
+        return;
+      }
+    }
     const next = addScheduleEventToState(state, {
       title: trimmedTitle,
       date: eventDate,
@@ -320,6 +349,10 @@ export function CalendarPlaceholder() {
     return true;
   });
 
+  const weekEvents = state.scheduleEvents.filter(
+    (evt) => filterEventType === "all" || evt.type === filterEventType
+  );
+
   const totalTargetHours = state.goals.reduce(
     (sum, g) => sum + g.targetHours,
     0
@@ -344,13 +377,13 @@ export function CalendarPlaceholder() {
             Hệ thống Lịch trình &amp; Mục tiêu Cá nhân
           </h1>
           <p className="mt-1 text-sm text-edtech-muted">
-            Thiết lập mục tiêu kèm đếm ngược số ngày còn lại, lên lịch lặp lại
-            theo chuỗi ngày và xem theo Danh sách hoặc Bảng khung giờ Sáng –
-            Chiều – Tối.
+            Thiết lập mục tiêu, lên lịch lặp lại và theo dõi thời gian biểu bằng
+            Danh sách, Bảng ca học hoặc Lưới lịch tuần 7 ngày.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-auto">
+          <CameraPrivacyGuide />
           <button
             type="button"
             onClick={handleClearEmpty}
@@ -840,7 +873,10 @@ export function CalendarPlaceholder() {
                   type="date"
                   required
                   value={eventDate}
-                  onChange={(e) => setEventDate(e.target.value)}
+                  onChange={(e) => {
+                    setEventDate(e.target.value);
+                    if (eventError) setEventError("");
+                  }}
                   className="w-full px-3 py-2.5 rounded-xl bg-edtech-bg border border-slate-300 text-sm text-edtech-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-edtech-primary"
                 />
               </div>
@@ -1066,6 +1102,19 @@ export function CalendarPlaceholder() {
                   <LayoutGrid className="w-3.5 h-3.5" aria-hidden={true} />
                   <span>Bảng Ca Học</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("week")}
+                  aria-pressed={viewMode === "week"}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    viewMode === "week"
+                      ? "bg-edtech-primary text-white"
+                      : "text-edtech-muted hover:text-edtech-text"
+                  }`}
+                >
+                  <CalendarDays className="w-3.5 h-3.5" aria-hidden={true} />
+                  <span>Lịch tuần</span>
+                </button>
               </div>
 
               <div className="inline-flex rounded-xl bg-edtech-bg p-1 border border-edtech-border">
@@ -1129,7 +1178,7 @@ export function CalendarPlaceholder() {
             </div>
           </div>
 
-          {filteredEvents.length === 0 ? (
+          {filteredEvents.length === 0 && viewMode !== "week" ? (
             <div className="p-8 text-center bg-edtech-bg rounded-2xl border border-dashed border-slate-300 space-y-2">
               <CalendarCheck2
                 className="w-8 h-8 text-edtech-primary mx-auto"
@@ -1143,6 +1192,12 @@ export function CalendarPlaceholder() {
                 đề xuất lịch tự động không trùng giờ.
               </p>
             </div>
+          ) : viewMode === "week" ? (
+            <WeekCalendarGrid
+              events={weekEvents}
+              onEditEvent={handleStartEditEvent}
+              initialDate={selectedFilterDate}
+            />
           ) : viewMode === "board" ? (
             /* Chế độ Bảng Ca Học Sáng / Chiều / Tối (v1.1+ Board View) */
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
@@ -1291,7 +1346,7 @@ export function CalendarPlaceholder() {
                       <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                         {!isDone && (
                           <Link
-                            href="/pomodoro"
+                            href={`/pomodoro?eventId=${encodeURIComponent(evt.id)}${evt.goalId ? `&goalId=${encodeURIComponent(evt.goalId)}` : ""}`}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-edtech-primary text-xs font-bold border border-blue-200 transition-colors"
                           >
                             <Timer className="w-3.5 h-3.5" aria-hidden={true} />
