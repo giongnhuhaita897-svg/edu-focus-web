@@ -27,6 +27,7 @@ import {
 } from "@/lib/storage/local-db";
 import { CameraPrivacyMode } from "@/modules/webcam/face-canvas-renderer";
 import { StudyFocusCameraPanel } from "@/modules/webcam/StudyFocusCameraPanel";
+import { ExerciseCameraPanel } from "@/modules/webcam/ExerciseCameraPanel";
 
 interface ExerciseOption {
   id: ExerciseType;
@@ -80,22 +81,28 @@ export function WebcamPlaceholder() {
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
     return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
+const queryString = query?.toString() ?? "";
+
 useEffect(() => {
   const params = parseFocusQuery(
-    new URLSearchParams(query.toString())
+    new URLSearchParams(queryString)
   );
 
   setActiveTab(params.tab);
   setSelectedPreset(params.preset);
-}, [query]);
+}, [queryString]);
   const currentPreset = POMODORO_PRESETS[selectedPreset];
   const currentExercise =
     WEBCAM_EXERCISES.find((e) => e.id === selectedExercise) ??
     WEBCAM_EXERCISES[0];
 
   const handleSaveExerciseSession = () => {
-    const repsToSave =
-      currentReps > 0 ? currentReps : currentExercise.targetReps;
+    if (currentReps <= 0) {
+  setSessionBanner("Chưa có nhịp vận động nào để lưu.");
+  return;
+}
+
+const repsToSave = currentReps;
     const next = recordExerciseSessionInState(dbState, {
       exerciseType: selectedExercise,
       completedReps: repsToSave,
@@ -307,54 +314,38 @@ useEffect(() => {
               </span>
             </div>
 
-            <div className="aspect-video w-full rounded-2xl bg-slate-900 text-white p-6 flex flex-col justify-between border border-slate-800">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-emerald-400 border border-slate-700">
-                  <span
-                    className="w-2 h-2 rounded-full bg-emerald-400"
-                    aria-hidden="true"
-                  />
-                  Pose Tracking: Theo dõi khớp vai &amp; cánh tay
-                </span>
-                <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/90 text-emerald-300 border border-slate-700">
-                  Bài tập: {currentExercise.name}
-                </span>
-              </div>
+            
+            <ExerciseCameraPanel
+              key={selectedExercise}
+              exercise={selectedExercise}
+              onRepsChange={setCurrentReps}
+              active={
+                activeTab === "exercise_break" &&
+                privacyMode !== "minimal"
+              }
+              showVideo={privacyMode ===  "standard"}
+            />
 
-              <div className="my-auto text-center space-y-2 max-w-md mx-auto">
-                <Dumbbell
-                  className="w-10 h-10 text-emerald-400 mx-auto"
-                  aria-hidden={true}
-                />
-                <p className="text-base font-bold">
-                  Khu vực hiển thị Webcam Đếm nhịp Thể dục
+            <div className="grid grid-cols-2 gap-3 text-center">
+              <div className="rounded-xl bg-edtech-bg p-3 border border-edtech-border">
+                <p className="text-xs text-edtech-muted">
+                  Số nhịp hoàn thành
                 </p>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {currentExercise.trackingNote}
+                <p className="mt-1 font-bold text-edtech-success">
+                 {currentReps} / {currentExercise.targetReps} nhịp
                 </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
-                  <p className="text-slate-400">Số nhịp hoàn thành</p>
-                  <p className="mt-0.5 font-bold text-emerald-400">
-                    {currentReps} / {currentExercise.targetReps} nhịp
-                  </p>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
-                  <p className="text-slate-400">Độ chuẩn biên độ</p>
-                  <p className="mt-0.5 font-bold text-white">
-                    {currentReps > 0 ? "Biên độ chuẩn ✓" : "Chờ khởi động"}
-                  </p>
-                </div>
-                <div className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700">
-                  <p className="text-slate-400">Pha Nghỉ Pomodoro</p>
-                  <p className="mt-0.5 font-bold text-blue-300">
-                    {currentPreset.breakMinutes} phút
-                  </p>
-                </div>
+              <div className="rounded-xl bg-edtech-bg p-3 border border-edtech-border">
+                <p className="text-xs text-edtech-muted">
+                  Pha Nghỉ Pomodoro
+                </p>
+                <p className="mt-1 font-bold text-edtech-primary">
+                  {currentPreset.breakMinutes} phút
+                </p>
               </div>
             </div>
+
 
             {/* Thanh điều khiển đếm thử & lưu phiên tập vào hồ sơ */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">

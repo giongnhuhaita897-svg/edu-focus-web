@@ -35,6 +35,7 @@ let currentPathname = "/";
 
 vi.mock("next/navigation", () => ({
   usePathname: () => currentPathname,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 describe("Phiên bản v1.1+ — Hệ sinh thái Kỷ luật Tự học, Trạng thái Người dùng mới & Phân tích Chuyên sâu", () => {
