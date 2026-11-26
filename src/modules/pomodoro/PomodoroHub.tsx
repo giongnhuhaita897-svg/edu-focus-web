@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import Link from "next/link";
+import { createWebcamLink, parseFocusQuery } from "@/modules/analytics/pomodoro-query";
 import {
   Timer,
   Play,
@@ -34,8 +35,8 @@ export const POMODORO_PRESETS: Record<PomodoroPresetId, PomodoroPreset> = {
   "25_5": {
     id: "25_5",
     label: "Pomodoro Chuẩn 25/5",
-    workMinutes: 25,
-    breakMinutes: 5,
+   workMinutes: 25,
+breakMinutes: 5,
     description:
       "25 phút Học/Làm tập trung + 5 phút Nghỉ ngắn. Phù hợp ôn từ vựng, đọc tài liệu, giải bài tập ngắn.",
   },
@@ -67,6 +68,68 @@ export function PomodoroHub() {
   const [selectedEventId, setSelectedEventId] = useState<string>("");
   const [sessionBanner, setSessionBanner] = useState<string>("");
 
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const alarmPlayedRef = useRef(false);
+
+  const prepareAudio = async () => {
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext();
+      }
+
+      const context = audioContextRef.current;
+
+      if (context.state === "suspended") {
+        await context.resume();
+      }
+
+      console.log("Audio context:", context.state);
+    } catch (error) {
+      console.error("Audio initialization failed:", error);
+    }
+  };
+
+  const playAlarm = async () => {
+    try {
+      await prepareAudio();
+
+      const context = audioContextRef.current;
+
+      if (!context || context.state !== "running") {
+        console.warn("Audio context is not running");
+        return;
+      }
+
+      const start = context.currentTime;
+
+      [660, 880, 660, 880].forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        const time = start + index * 0.5;
+
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+
+        gain.gain.setValueAtTime(0.2, time);
+        gain.gain.exponentialRampToValueAtTime(
+          0.001,
+          time + 0.4
+        );
+
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+
+        oscillator.start(time);
+        oscillator.stop(time + 0.4);
+      });
+
+      console.log("Alarm scheduled successfully");
+    } catch (error) {
+      console.error("Alarm playback failed:", error);
+    }
+  };
+
+
   useEffect(() => {
     const refresh = () => {
       const loaded = loadAppState();
@@ -80,7 +143,26 @@ export function PomodoroHub() {
     window.addEventListener(STATE_CHANGE_EVENT, refresh);
     return () => window.removeEventListener(STATE_CHANGE_EVENT, refresh);
   }, []);
+useEffect(() => {
+  if (!window.location.search) return;
 
+  const params = parseFocusQuery(
+    new URLSearchParams(window.location.search)
+  );
+
+  const loaded = loadAppState();
+
+  setPresetId(params.preset);
+  setPhase(params.tab === "exercise_break" ? "break" : "work");
+
+  if (loaded.goals.some((g) => g.id === params.goalId)) {
+    setSelectedGoalId(params.goalId);
+  }
+
+  if (loaded.scheduleEvents.some((e) => e.id === params.eventId)) {
+    setSelectedEventId(params.eventId);
+  }
+}, []);
   const currentPreset = POMODORO_PRESETS[presetId];
   const initialSeconds =
     (phase === "work"
@@ -148,12 +230,28 @@ export function PomodoroHub() {
   }, [isRunning]);
 
   useEffect(() => {
-    if (secondsLeft === 0 && phase === "work") {
-      handleCompleteWorkSession();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft]);
+  if (secondsLeft > 0) {
+    alarmPlayedRef.current = false;
+    return;
+  }
 
+  if (alarmPlayedRef.current) return;
+
+  alarmPlayedRef.current = true;
+  setIsRunning(false);
+  playAlarm();
+
+  if (phase === "work") {
+    handleCompleteWorkSession();
+  } else {
+    setSessionBanner(
+      "Đã kết thúc thời gian nghỉ giải lao!"
+    );
+    setPhase("work");
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [secondsLeft]);
   const progressPercent =
     initialSeconds > 0
       ? Math.round(((initialSeconds - secondsLeft) / initialSeconds) * 100)
@@ -202,7 +300,12 @@ export function PomodoroHub() {
         </div>
 
         <Link
-          href="/webcam"
+          href={createWebcamLink(
+  selectedGoalId,
+  selectedEventId,
+  presetId,
+  phase === "work" ? "study_focus" : "exercise_break"
+)}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-edtech-primary hover:bg-edtech-primaryHover text-white text-sm font-semibold shadow-sm transition-colors shrink-0"
         >
           <Camera className="w-4 h-4" aria-hidden={true} />
@@ -496,7 +599,10 @@ export function PomodoroHub() {
           <div className="flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"
-              onClick={() => setIsRunning((prev) => !prev)}
+              onClick={async () => {
+  await prepareAudio();
+  setIsRunning((prev) => !prev);
+}}
               className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl text-white text-sm font-bold shadow-sm transition-colors ${
                 phase === "work"
                   ? "bg-edtech-primary hover:bg-edtech-primaryHover"
